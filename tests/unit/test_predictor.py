@@ -21,6 +21,16 @@ class _FixedProbModel:
         return np.array([[1 - self.proba, self.proba]])
 
 
+class _WeirdModel:
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        return np.array([[[0.1, 0.9]]])  # 3D — invalid
+
+
+class _FlatModel:
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        return np.array([0.6])
+
+
 def _write_model_info(path: Path, threshold: float, version: str = "test-1") -> None:
     path.write_text(
         json.dumps(
@@ -85,14 +95,10 @@ def test_proba_in_unit_interval(tmp_path):
 
 
 def test_unexpected_prediction_shape_raises(tmp_path):
-    class WeirdModel:
-        def predict(self, df):
-            return np.array([[[0.1, 0.9]]])  # 3D — invalid
-
     info = tmp_path / "info.json"
     _write_model_info(info, 0.5)
     model = tmp_path / "model.joblib"
-    joblib.dump(WeirdModel(), model)
+    joblib.dump(_WeirdModel(), model)
     pred = CreditScoringPredictor.load(model, info, default_threshold=0.5)
     with pytest.raises(ValueError, match="Unexpected prediction shape"):
         pred.predict(pd.DataFrame([{}]))
@@ -100,15 +106,10 @@ def test_unexpected_prediction_shape_raises(tmp_path):
 
 def test_1d_array_prediction_supported(tmp_path):
     """Some PyFunc wrappers return a 1D probability array — supported too."""
-
-    class FlatModel:
-        def predict(self, df):
-            return np.array([0.6])
-
     info = tmp_path / "info.json"
     _write_model_info(info, 0.5)
     model = tmp_path / "model.joblib"
-    joblib.dump(FlatModel(), model)
+    joblib.dump(_FlatModel(), model)
     pred = CreditScoringPredictor.load(model, info, default_threshold=0.5)
     proba, decision = pred.predict(pd.DataFrame([{}]))
     assert proba == pytest.approx(0.6)
