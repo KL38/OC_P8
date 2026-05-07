@@ -1,3 +1,13 @@
+---
+title: OC P8 Credit Scoring API
+emoji: 💳
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
 [![Python][python-badge]][python-url]
 [![FastAPI][fastapi-badge]][fastapi-url]
 [![CI][ci-badge]][ci-url]
