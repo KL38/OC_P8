@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -28,6 +29,32 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
+def _resolve_feature_store_path() -> Path:
+    """Return a usable path for the parquet, downloading it on demand.
+
+    Local file (offline dev, tests, prebuilt image) takes precedence. When
+    absent — typically on the HF Space first cold start — fetch it from the
+    companion Dataset repo via huggingface_hub. The downloaded path is
+    cached locally by huggingface_hub for subsequent boots.
+    """
+    if settings.FEATURE_STORE_PATH.exists():
+        return settings.FEATURE_STORE_PATH
+
+    from huggingface_hub import hf_hub_download
+
+    logger.info(
+        "Feature store missing locally — downloading %s from dataset %s",
+        settings.HF_DATASET_FILENAME,
+        settings.HF_DATASET_REPO_ID,
+    )
+    cached_path = hf_hub_download(
+        repo_id=settings.HF_DATASET_REPO_ID,
+        filename=settings.HF_DATASET_FILENAME,
+        repo_type="dataset",
+    )
+    return Path(cached_path)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load heavy artefacts once and attach them to app.state."""
@@ -43,13 +70,14 @@ async def lifespan(app: FastAPI):
         app.state.predictor.threshold,
     )
 
-    logger.info("Loading inference artefacts...")
+    feature_store_path = _resolve_feature_store_path()
+    logger.info("Loading inference artefacts (feature_store=%s)...", feature_store_path)
     app.state.artefacts = InferenceArtefacts.load(
         feature_names_path=settings.FEATURE_NAMES_PATH,
         categories_path=settings.APP_TRAIN_CATEGORIES_PATH,
         binary_mappings_path=settings.APP_TRAIN_BINARY_MAPPINGS_PATH,
         no_history_template_path=settings.NO_HISTORY_TEMPLATE_PATH,
-        feature_store_path=settings.FEATURE_STORE_PATH,
+        feature_store_path=feature_store_path,
     )
     logger.info(
         "Artefacts ready: %d feature_names, feature_store=%d clients",

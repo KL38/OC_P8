@@ -4,7 +4,8 @@
       "Bash(uv add *)",
       "Bash(python -c ' *)",
       "Bash(uv run --active python -c ' *)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "WebSearch"
     ]
   }
 }

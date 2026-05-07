@@ -251,6 +251,17 @@ JSON {SK_ID_CURR + 120 raw application_train fields}
 
 The unknown-client path preserves XGBoost's training-time NaN signal ("no historical data") rather than imputing fictitious medians.
 
+### Data layer — code/data separation
+
+The 235 MB `features_store.parquet` is **not bundled** in the Docker image. It lives in a companion HF Dataset repo (`KLEB38/oc-p8-features`) and is fetched at the API's first cold start via `huggingface_hub.hf_hub_download`, then cached on disk. This follows HF's recommended pattern: Spaces hold code, Datasets hold data.
+
+| Layer | Repo | Content |
+|-------|------|---------|
+| Code + small artefacts | `KLEB38/OC_P8` (Space, Docker) | `api/`, `models/*.json`, `models/model.joblib` |
+| Large data | `KLEB38/oc-p8-features` (Dataset) | `features_store.parquet` (235 MB, LFS) |
+
+The local path (`data/features_store.parquet`) takes precedence — the HF download only fires when the file is absent (Space cold start). Configurable via `OC_P8_HF_DATASET_REPO_ID` and `OC_P8_HF_DATASET_FILENAME`.
+
 ---
 
 ## CI/CD Pipeline
@@ -320,7 +331,8 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 
 | Secret | Required for | Description |
 |--------|-------------|-------------|
-| `HF_TOKEN` | `deploy` | Hugging Face write token ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) |
+| `HF_TOKEN` | `deploy` (GitHub Actions) | Hugging Face write token ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) |
+| `HF_TOKEN` | Space runtime (optional) | Only required if the Dataset `KLEB38/oc-p8-features` is **private**. Set as a Space secret in HF → Space settings → Variables and secrets. |
 
 ---
 
@@ -331,10 +343,10 @@ Build and run locally:
 ```powershell
 docker build -t oc-p8-api .
 docker run -p 7860:7860 oc-p8-api
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:7860/health
 ```
 
-The `Dockerfile` validates that all runtime artefacts are present at build time — if you forgot to run `build_feature_store.py`, the build fails fast with a clear message.
+The Docker image bundles only the code and the small JSON/joblib artefacts under `models/`. The `Dockerfile` fails fast at build time if any of those are missing. The 235 MB `features_store.parquet` is **not** in the image — it is downloaded at startup from the companion HF Dataset (see [Data layer](#data-layer--codedata-separation)).
 
 ---
 
@@ -360,6 +372,7 @@ scripts/                  # Offline maintenance scripts
   export_model.py         # Imports model.joblib from OC_P6 MLflow registry
   smoke_test_model.py
   check_registry.py
+  upload_data_to_hf.py    # One-shot upload of features_store.parquet to HF Dataset
 
 tests/
   conftest.py             # Synthetic fixtures — no real data needed
@@ -367,9 +380,9 @@ tests/
   integration/            # FastAPI TestClient end-to-end tests
 
 models/                   # model.joblib + JSON metadata (committed to git)
-data/                     # features_store.parquet (gitignored — too large)
+data/                     # features_store.parquet (gitignored — fetched from HF Dataset at runtime)
 .github/workflows/
-  ci.yml                  # 3-job CI/CD pipeline
+  ci.yml                  # 2-job CI/CD pipeline (test + manual deploy)
 Dockerfile
 pyproject.toml
 ```

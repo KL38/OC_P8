@@ -16,10 +16,11 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Application code + serialized artefacts.
+# Application code + serialized artefacts. The 235 MB feature store is NOT
+# bundled — it lives in a separate HF Dataset repo and is fetched at runtime
+# via huggingface_hub (see api/main.py::_resolve_feature_store_path).
 COPY api/ ./api/
 COPY models/ ./models/
-COPY data/ ./data/
 
 # Sanity: fail fast at build time if the artefacts the API needs are missing.
 RUN test -f models/model.joblib \
@@ -27,7 +28,6 @@ RUN test -f models/model.joblib \
     && test -f models/app_train_categories.json \
     && test -f models/app_train_binary_mappings.json \
     && test -f models/no_history_template.json \
-    && test -f data/features_store.parquet \
     && echo "All runtime artefacts present."
 
 EXPOSE 7860

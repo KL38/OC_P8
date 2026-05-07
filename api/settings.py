@@ -33,5 +33,11 @@ FEATURE_STORE_PATH = Path(
     os.getenv("OC_P8_FEATURE_STORE_PATH", ROOT / "data" / "features_store.parquet")
 )
 
+# When the local parquet is missing (HF Space cold start), fall back to
+# downloading from a companion Dataset repo. Decoupling code (Space) from
+# data (Dataset) is the pattern HF officially recommends for files >10 MB.
+HF_DATASET_REPO_ID = os.getenv("OC_P8_HF_DATASET_REPO_ID", "KLEB38/oc-p8-features")
+HF_DATASET_FILENAME = os.getenv("OC_P8_HF_DATASET_FILENAME", "features_store.parquet")
+
 # Default fallback if model_info.json does not expose the optimised threshold.
 DEFAULT_THRESHOLD = 0.33
