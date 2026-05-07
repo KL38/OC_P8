@@ -1,0 +1,37 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+htmlcov
+.ruff_cache
+.mypy_cache
+
+# Notebooks and exploration scripts not needed at runtime
+notebooks/
+scripts/
+mlruns/
+mlartifacts/
+mlflow.db*
+
+# Tests are run in CI, not bundled in the image
+tests/
+
+# Offline-only feature engineering code
+feature_engineering/
+
+# Local config
+.env
+.envrc
+.vscode
+.idea
+*.swp
+
+# Build artefacts
+build/
+dist/
+*.egg-info/

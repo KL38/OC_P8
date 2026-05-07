@@ -1,0 +1,14 @@
+{
+  "CODE_GENDER": {
+    "M": 0,
+    "F": 1
+  },
+  "FLAG_OWN_CAR": {
+    "N": 0,
+    "Y": 1
+  },
+  "FLAG_OWN_REALTY": {
+    "Y": 0,
+    "N": 1
+  }
+}

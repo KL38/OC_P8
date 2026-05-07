@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# UV / Poetry
+.uv/
+.python-version
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# Type checkers / linters
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDEs / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.envrc
+
+# MLflow local artefacts (kept in OC_P6, not commited here)
+mlruns/
+mlartifacts/
+mlflow.db
+mlflow.db.backup
+
+# Large generated artefact — produced by scripts/build_feature_store.py.
+# Too large for git (~100-300 MB); rebuild from the OC_P6 data when needed.
+data/features_store.parquet
+
+# The metadata JSONs (feature_names, app_train_columns, app_train_categories,
+# app_train_binary_mappings, no_history_template) are intentionally COMMITTED:
+# they are small (<100 KB total) and required by the Docker build. Regenerate
+# them with:  uv run python scripts/build_feature_store.py
+
+# Project-local logs / scratch
+logs/
+*.log
+scratch/
+tmp/
