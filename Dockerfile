@@ -6,6 +6,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     PATH=/opt/venv/bin:$PATH
 
+# LightGBM links against OpenMP at runtime (libgomp.so.1). The python:3.12-slim
+# base image does not ship it, so we install it explicitly. Note: packages.txt
+# is ignored by HF Spaces when sdk=docker — system deps must live here.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # UV gives reproducible installs from uv.lock and is faster than pip.
 COPY --from=ghcr.io/astral-sh/uv:0.5.4 /uv /usr/local/bin/uv
 

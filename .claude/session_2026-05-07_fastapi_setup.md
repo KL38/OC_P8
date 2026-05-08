@@ -288,3 +288,142 @@ Travaux à prévoir :
 
 3. **Ruff warnings** : 4 unused imports / unused f-strings auto-fixés dans
    scripts.
+
+---
+
+## Session du soir 2026-05-07 — refonte du déploiement HF
+
+Après le setup initial du matin, plusieurs corrections sur la chaîne de
+déploiement HF Space en se basant sur les retours du runner CI et sur les
+docs HF officielles.
+
+### CI/CD pipeline simplifié
+
+- **Suppression du job `build`** (push image GHCR) : l'image Docker est
+  buildée directement par HF Space à partir du `Dockerfile`, donc le job
+  de build GitHub était redondant.
+- Pipeline réduit à 2 jobs : `test` (à chaque push/PR) → `deploy`
+  (`workflow_dispatch` manuel).
+- `lfs: true` ajouté aux `actions/checkout` (par défaut, checkout ne pull
+  pas les blobs LFS — mais en pratique pas de fichier LFS dans le repo
+  GitHub pour l'instant).
+- Job `deploy` reste sur `needs: test` : trade-off accepté que les tests
+  re-tournent au moment du déploiement manuel (sécurité > 30s de runner).
+
+### Switch git push → `huggingface_hub.upload_folder` pour le deploy
+
+- Tentative initiale `git push --force https://...@huggingface.co/...`
+  rejetée par HF avec `pre-receive hook declined` car `models/model.joblib`
+  > 10 Mo n'était pas en LFS.
+- Tentative suivante avec `git lfs migrate import` en CI : a fonctionné
+  pour le model.joblib mais pose des problèmes connus (cf OC_P5) liés au
+  routage des objets LFS entre serveur GitHub et HF.
+- **Solution retenue** : `huggingface_hub.upload_folder` qui passe par
+  l'API REST HF et gère le routage LFS automatiquement côté serveur.
+  Plus simple, plus robuste, c'est le pattern recommandé par HF.
+
+### Frontmatter HF Space dans le README
+
+HF a refusé le premier build avec `Missing configuration in README`. Ajout
+du YAML frontmatter en tête du README :
+
+```yaml
+---
+title: OC P8 Credit Scoring API
+emoji: 💳
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+```
+
+Note : `app_port: 7860` (pas 8000) car le Dockerfile expose 7860 et c'est
+le port par défaut HF Docker Spaces. Le `port` du `docker run` local doit
+être aligné : `docker run -p 7860:7860`.
+
+### Le piège HF Spaces avec gros fichiers (235 Mo parquet)
+
+**Le problème central de la session.** Le Dockerfile copiait
+`data/features_store.parquet` (235 Mo, gitignored) → fail sur HF car le
+fichier n'existe pas dans le contexte de build.
+
+**Tentatives infructueuses** :
+1. `huggingface_hub.upload_file` avec `repo_type="space"` → API retourne
+   un OID de commit valide, mais le commit est **vide** côté objets.
+   Diagnostic via `list_repo_files` post-upload : le parquet n'apparaît pas.
+2. Ajout d'un `.gitattributes` taggant `*.parquet` en LFS dans le même
+   commit → même résultat, file silencieusement non-persisté.
+3. Warning HF explicite : *"It seems that you are about to commit a data
+   file to a space repository. If you are trying to upload a dataset,
+   please set repo_type='dataset'"*. Pas une suggestion : c'est en fait
+   une **protection serveur silencieuse** non documentée — les uploads
+   >10 Mo dans un Space sont rejetés sans erreur claire.
+
+**Solution retenue : pattern code/data séparés (officiel HF)**
+
+| Layer | Repo | Content |
+|-------|------|---------|
+| Code + small artefacts | `KLEB38/OC_P8` (Space, Docker) | `api/`, `models/*.json`, `models/model.joblib` |
+| Large data | `KLEB38/oc-p8-features` (Dataset) | `features_store.parquet` (235 Mo, LFS auto) |
+
+Le Space télécharge le parquet au cold start via `hf_hub_download(...,
+repo_type="dataset")`, qui met en cache localement → pas de re-download
+aux boot suivants.
+
+### Modifs concrètes pour appliquer le pattern
+
+1. **`pyproject.toml`** : `huggingface-hub>=1.14.0` déplacée de `dev` →
+   deps prod (utilisée au runtime maintenant, plus juste pour le script
+   d'upload).
+2. **`api/settings.py`** : ajout de `HF_DATASET_REPO_ID` (défaut
+   `"KLEB38/oc-p8-features"`) et `HF_DATASET_FILENAME` (défaut
+   `"features_store.parquet"`), tous deux configurables via env vars
+   `OC_P8_HF_DATASET_REPO_ID` / `OC_P8_HF_DATASET_FILENAME`.
+3. **`api/main.py`** : nouvelle fonction `_resolve_feature_store_path()`
+   appelée dans le lifespan. Logique :
+   - Si `settings.FEATURE_STORE_PATH.exists()` → retourne ce path
+     (cas dev local + cas tests via `patched_settings`).
+   - Sinon → `hf_hub_download(...)` et retourne le chemin du cache HF.
+   - Import lazy de `huggingface_hub` dans la fonction (pas à
+     l'import-time du module) pour ne pas ralentir l'app si la lib n'est
+     pas dispo.
+4. **`Dockerfile`** : suppression de `COPY data/ ./data/` et du
+   `test -f data/features_store.parquet`. Image Docker plus légère.
+5. **`scripts/upload_data_to_hf.py`** : cible désormais
+   `KLEB38/oc-p8-features` avec `repo_type="dataset"`. Documente en
+   prérequis la création manuelle du Dataset sur
+   https://huggingface.co/new-dataset.
+6. **`README.md`** : nouvelle section "Data layer — code/data
+   separation" sous Architecture, mise à jour Docker, Required secrets
+   (HF_TOKEN runtime optionnel si Dataset privé), project layout.
+
+### Tests
+
+- 45/45 passent post-refacto, couverture 97 % (gate 80 % CI OK).
+- Le lifespan ne déclenche **pas** de download HF en test : la fixture
+  `patched_settings` set `OC_P8_FEATURE_STORE_PATH` vers un parquet
+  synthétique dans `tmp_path` → la condition `.exists()` est True.
+
+### Bug collatéral résolu pendant la session
+
+`test_unexpected_prediction_shape_raises` et
+`test_1d_array_prediction_supported` échouaient avec `PicklingError:
+Can't pickle <class '<locals>.WeirdModel'>`. Cause : les classes étaient
+définies à l'intérieur des fonctions de test, et `pickle` (utilisé par
+`joblib.dump`) ne peut sérialiser que les classes accessibles par
+import-path. Fix : déplacer `_WeirdModel` et `_FlatModel` au niveau
+module dans `tests/unit/test_predictor.py`.
+
+### Étape utilisateur restante
+
+Côté Kevin (manuel, une seule fois) :
+
+1. Créer le Dataset `KLEB38/oc-p8-features` sur
+   https://huggingface.co/new-dataset (public recommandé pour éviter
+   `HF_TOKEN` au runtime).
+2. `$env:HF_TOKEN = "hf_xxx..."; uv run python scripts/upload_data_to_hf.py`
+3. Vérifier la présence du parquet sur HF Dataset.
+4. Re-trigger le `workflow_dispatch` du CI → build Docker passe, Space
+   démarre, lifespan télécharge le parquet une fois et le cache.
