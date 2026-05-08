@@ -198,8 +198,8 @@ def installments_payments(
 
     ins["DPD"] = ins["DAYS_ENTRY_PAYMENT"] - ins["DAYS_INSTALMENT"]
     ins["DBD"] = ins["DAYS_INSTALMENT"] - ins["DAYS_ENTRY_PAYMENT"]
-    ins["DPD"] = ins["DPD"].apply(lambda x: x if x > 0 else 0)
-    ins["DBD"] = ins["DBD"].apply(lambda x: x if x > 0 else 0)
+    ins["DPD"] = ins["DPD"].clip(lower=0)
+    ins["DBD"] = ins["DBD"].clip(lower=0)
 
     aggregations: dict[str, list[str]] = {
         "NUM_INSTALMENT_VERSION": ["nunique"],

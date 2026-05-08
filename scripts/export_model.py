@@ -52,6 +52,9 @@ print(f"  Version   : {mv.version}")
 print(f"  Run ID    : {mv.run_id}")
 print(f"  Source    : {mv.source}")
 
+if mv.run_id is None:
+    raise RuntimeError(f"Model version {MODEL_NAME}/{MODEL_VERSION} has no associated run_id")
+
 run = client.get_run(mv.run_id)
 print("\n  Run metrics:")
 for k, v in run.data.metrics.items():
@@ -72,7 +75,7 @@ model = mlflow.pyfunc.load_model(str(P6_MODEL_PATH))
 print("\n  Model signature:")
 sig = model.metadata.signature
 if sig is None:
-    print("    ⚠️  No signature logged - inputs will not be validated at inference!")
+    print("    [WARN] No signature logged - inputs will not be validated at inference!")
     n_features = None
     feature_names = None
 else:
@@ -87,7 +90,7 @@ else:
 # ============================================================
 joblib.dump(model, OUTPUT_MODEL)
 size_mb = OUTPUT_MODEL.stat().st_size / 1e6
-print(f"\n✅ Model saved to: {OUTPUT_MODEL} ({size_mb:.2f} MB)")
+print(f"\n[OK] Model saved to: {OUTPUT_MODEL} ({size_mb:.2f} MB)")
 
 # ============================================================
 # 4. Save provenance metadata
@@ -106,6 +109,6 @@ info = {
 }
 with open(OUTPUT_INFO, "w") as f:
     json.dump(info, f, indent=2, default=str)
-print(f"✅ Metadata saved to: {OUTPUT_INFO}")
+print(f"[OK] Metadata saved to: {OUTPUT_INFO}")
 
 print("=" * 60)

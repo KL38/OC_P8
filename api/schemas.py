@@ -12,7 +12,7 @@ nonsensical inputs at the API boundary.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -178,9 +178,9 @@ class PredictionRequest(BaseModel):
     CNT_CHILDREN: int = Field(ge=0, le=20)
     AMT_INCOME_TOTAL: float = Field(gt=0)
     AMT_CREDIT: float = Field(gt=0)
-    AMT_ANNUITY: Optional[float] = Field(default=None, gt=0)
-    AMT_GOODS_PRICE: Optional[float] = Field(default=None, gt=0)
-    NAME_TYPE_SUITE: Optional[TypeSuite] = None
+    AMT_ANNUITY: float | None = Field(default=None, gt=0)
+    AMT_GOODS_PRICE: float | None = Field(default=None, gt=0)
+    NAME_TYPE_SUITE: TypeSuite | None = None
     NAME_INCOME_TYPE: IncomeType
     NAME_EDUCATION_TYPE: EducationType
     NAME_FAMILY_STATUS: FamilyStatus
@@ -194,14 +194,14 @@ class PredictionRequest(BaseModel):
     )
     DAYS_REGISTRATION: float = Field(le=0, ge=-25000)
     DAYS_ID_PUBLISH: int = Field(le=0, ge=-10000)
-    OWN_CAR_AGE: Optional[float] = Field(default=None, ge=0, le=100)
+    OWN_CAR_AGE: float | None = Field(default=None, ge=0, le=100)
     FLAG_MOBIL: int = Field(ge=0, le=1)
     FLAG_EMP_PHONE: int = Field(ge=0, le=1)
     FLAG_WORK_PHONE: int = Field(ge=0, le=1)
     FLAG_CONT_MOBILE: int = Field(ge=0, le=1)
     FLAG_PHONE: int = Field(ge=0, le=1)
     FLAG_EMAIL: int = Field(ge=0, le=1)
-    OCCUPATION_TYPE: Optional[OccupationType] = None
+    OCCUPATION_TYPE: OccupationType | None = None
     CNT_FAM_MEMBERS: float = Field(ge=1, le=20)
     REGION_RATING_CLIENT: int = Field(ge=1, le=3)
     REGION_RATING_CLIENT_W_CITY: int = Field(ge=1, le=3)
@@ -216,64 +216,64 @@ class PredictionRequest(BaseModel):
     ORGANIZATION_TYPE: OrganizationType
 
     # External scoring sources ----------------------------------------------
-    EXT_SOURCE_1: Optional[float] = Field(default=None, ge=0, le=1)
-    EXT_SOURCE_2: Optional[float] = Field(default=None, ge=0, le=1)
-    EXT_SOURCE_3: Optional[float] = Field(default=None, ge=0, le=1)
+    EXT_SOURCE_1: float | None = Field(default=None, ge=0, le=1)
+    EXT_SOURCE_2: float | None = Field(default=None, ge=0, le=1)
+    EXT_SOURCE_3: float | None = Field(default=None, ge=0, le=1)
 
     # Building characteristics (mostly nullable, ratios in [0, 1]) ----------
-    APARTMENTS_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    BASEMENTAREA_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    YEARS_BEGINEXPLUATATION_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    YEARS_BUILD_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    COMMONAREA_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    ELEVATORS_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    ENTRANCES_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    FLOORSMAX_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    FLOORSMIN_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    LANDAREA_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    LIVINGAPARTMENTS_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    LIVINGAREA_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    NONLIVINGAPARTMENTS_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    NONLIVINGAREA_AVG: Optional[float] = Field(default=None, ge=0, le=1)
-    APARTMENTS_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    BASEMENTAREA_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    YEARS_BEGINEXPLUATATION_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    YEARS_BUILD_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    COMMONAREA_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    ELEVATORS_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    ENTRANCES_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    FLOORSMAX_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    FLOORSMIN_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    LANDAREA_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    LIVINGAPARTMENTS_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    LIVINGAREA_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    NONLIVINGAPARTMENTS_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    NONLIVINGAREA_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    APARTMENTS_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    BASEMENTAREA_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    YEARS_BEGINEXPLUATATION_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    YEARS_BUILD_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    COMMONAREA_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    ELEVATORS_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    ENTRANCES_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    FLOORSMAX_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    FLOORSMIN_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    LANDAREA_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    LIVINGAPARTMENTS_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    LIVINGAREA_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    NONLIVINGAPARTMENTS_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    NONLIVINGAREA_MEDI: Optional[float] = Field(default=None, ge=0, le=1)
-    FONDKAPREMONT_MODE: Optional[FondKapremontMode] = None
-    HOUSETYPE_MODE: Optional[HouseTypeMode] = None
-    TOTALAREA_MODE: Optional[float] = Field(default=None, ge=0, le=1)
-    WALLSMATERIAL_MODE: Optional[WallsMaterialMode] = None
-    EMERGENCYSTATE_MODE: Optional[EmergencyStateMode] = None
+    APARTMENTS_AVG: float | None = Field(default=None, ge=0, le=1)
+    BASEMENTAREA_AVG: float | None = Field(default=None, ge=0, le=1)
+    YEARS_BEGINEXPLUATATION_AVG: float | None = Field(default=None, ge=0, le=1)
+    YEARS_BUILD_AVG: float | None = Field(default=None, ge=0, le=1)
+    COMMONAREA_AVG: float | None = Field(default=None, ge=0, le=1)
+    ELEVATORS_AVG: float | None = Field(default=None, ge=0, le=1)
+    ENTRANCES_AVG: float | None = Field(default=None, ge=0, le=1)
+    FLOORSMAX_AVG: float | None = Field(default=None, ge=0, le=1)
+    FLOORSMIN_AVG: float | None = Field(default=None, ge=0, le=1)
+    LANDAREA_AVG: float | None = Field(default=None, ge=0, le=1)
+    LIVINGAPARTMENTS_AVG: float | None = Field(default=None, ge=0, le=1)
+    LIVINGAREA_AVG: float | None = Field(default=None, ge=0, le=1)
+    NONLIVINGAPARTMENTS_AVG: float | None = Field(default=None, ge=0, le=1)
+    NONLIVINGAREA_AVG: float | None = Field(default=None, ge=0, le=1)
+    APARTMENTS_MODE: float | None = Field(default=None, ge=0, le=1)
+    BASEMENTAREA_MODE: float | None = Field(default=None, ge=0, le=1)
+    YEARS_BEGINEXPLUATATION_MODE: float | None = Field(default=None, ge=0, le=1)
+    YEARS_BUILD_MODE: float | None = Field(default=None, ge=0, le=1)
+    COMMONAREA_MODE: float | None = Field(default=None, ge=0, le=1)
+    ELEVATORS_MODE: float | None = Field(default=None, ge=0, le=1)
+    ENTRANCES_MODE: float | None = Field(default=None, ge=0, le=1)
+    FLOORSMAX_MODE: float | None = Field(default=None, ge=0, le=1)
+    FLOORSMIN_MODE: float | None = Field(default=None, ge=0, le=1)
+    LANDAREA_MODE: float | None = Field(default=None, ge=0, le=1)
+    LIVINGAPARTMENTS_MODE: float | None = Field(default=None, ge=0, le=1)
+    LIVINGAREA_MODE: float | None = Field(default=None, ge=0, le=1)
+    NONLIVINGAPARTMENTS_MODE: float | None = Field(default=None, ge=0, le=1)
+    NONLIVINGAREA_MODE: float | None = Field(default=None, ge=0, le=1)
+    APARTMENTS_MEDI: float | None = Field(default=None, ge=0, le=1)
+    BASEMENTAREA_MEDI: float | None = Field(default=None, ge=0, le=1)
+    YEARS_BEGINEXPLUATATION_MEDI: float | None = Field(default=None, ge=0, le=1)
+    YEARS_BUILD_MEDI: float | None = Field(default=None, ge=0, le=1)
+    COMMONAREA_MEDI: float | None = Field(default=None, ge=0, le=1)
+    ELEVATORS_MEDI: float | None = Field(default=None, ge=0, le=1)
+    ENTRANCES_MEDI: float | None = Field(default=None, ge=0, le=1)
+    FLOORSMAX_MEDI: float | None = Field(default=None, ge=0, le=1)
+    FLOORSMIN_MEDI: float | None = Field(default=None, ge=0, le=1)
+    LANDAREA_MEDI: float | None = Field(default=None, ge=0, le=1)
+    LIVINGAPARTMENTS_MEDI: float | None = Field(default=None, ge=0, le=1)
+    LIVINGAREA_MEDI: float | None = Field(default=None, ge=0, le=1)
+    NONLIVINGAPARTMENTS_MEDI: float | None = Field(default=None, ge=0, le=1)
+    NONLIVINGAREA_MEDI: float | None = Field(default=None, ge=0, le=1)
+    FONDKAPREMONT_MODE: FondKapremontMode | None = None
+    HOUSETYPE_MODE: HouseTypeMode | None = None
+    TOTALAREA_MODE: float | None = Field(default=None, ge=0, le=1)
+    WALLSMATERIAL_MODE: WallsMaterialMode | None = None
+    EMERGENCYSTATE_MODE: EmergencyStateMode | None = None
 
     # Social circle ---------------------------------------------------------
-    OBS_30_CNT_SOCIAL_CIRCLE: Optional[float] = Field(default=None, ge=0, le=500)
-    DEF_30_CNT_SOCIAL_CIRCLE: Optional[float] = Field(default=None, ge=0, le=500)
-    OBS_60_CNT_SOCIAL_CIRCLE: Optional[float] = Field(default=None, ge=0, le=500)
-    DEF_60_CNT_SOCIAL_CIRCLE: Optional[float] = Field(default=None, ge=0, le=500)
+    OBS_30_CNT_SOCIAL_CIRCLE: float | None = Field(default=None, ge=0, le=500)
+    DEF_30_CNT_SOCIAL_CIRCLE: float | None = Field(default=None, ge=0, le=500)
+    OBS_60_CNT_SOCIAL_CIRCLE: float | None = Field(default=None, ge=0, le=500)
+    DEF_60_CNT_SOCIAL_CIRCLE: float | None = Field(default=None, ge=0, le=500)
 
     DAYS_LAST_PHONE_CHANGE: float = Field(le=0, ge=-15000)
 
@@ -300,12 +300,12 @@ class PredictionRequest(BaseModel):
     FLAG_DOCUMENT_21: int = Field(ge=0, le=1)
 
     # Credit bureau request volume -----------------------------------------
-    AMT_REQ_CREDIT_BUREAU_HOUR: Optional[float] = Field(default=None, ge=0, le=500)
-    AMT_REQ_CREDIT_BUREAU_DAY: Optional[float] = Field(default=None, ge=0, le=500)
-    AMT_REQ_CREDIT_BUREAU_WEEK: Optional[float] = Field(default=None, ge=0, le=500)
-    AMT_REQ_CREDIT_BUREAU_MON: Optional[float] = Field(default=None, ge=0, le=500)
-    AMT_REQ_CREDIT_BUREAU_QRT: Optional[float] = Field(default=None, ge=0, le=500)
-    AMT_REQ_CREDIT_BUREAU_YEAR: Optional[float] = Field(default=None, ge=0, le=500)
+    AMT_REQ_CREDIT_BUREAU_HOUR: float | None = Field(default=None, ge=0, le=500)
+    AMT_REQ_CREDIT_BUREAU_DAY: float | None = Field(default=None, ge=0, le=500)
+    AMT_REQ_CREDIT_BUREAU_WEEK: float | None = Field(default=None, ge=0, le=500)
+    AMT_REQ_CREDIT_BUREAU_MON: float | None = Field(default=None, ge=0, le=500)
+    AMT_REQ_CREDIT_BUREAU_QRT: float | None = Field(default=None, ge=0, le=500)
+    AMT_REQ_CREDIT_BUREAU_YEAR: float | None = Field(default=None, ge=0, le=500)
 
 
 # ---------------------------------------------------------------------------

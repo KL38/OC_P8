@@ -112,9 +112,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
-
-@app.get("/") # La page d'accueil 
-async def read_root():
+@app.get("/", tags=["meta"])
+async def read_root() -> dict[str, str]:
     return {"message": "Welcome to the CREDIT DEFAULT predictor API for Prêt à Dépenser"}
 
 

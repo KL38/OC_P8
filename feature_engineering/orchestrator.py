@@ -8,6 +8,7 @@ the model.
 from __future__ import annotations
 
 import gc
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,8 @@ from feature_engineering.aggregations import (
     pos_cash,
     previous_applications,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def app_train_clean(
@@ -56,31 +59,31 @@ def merge_files(data_dir: Path, debug: bool = False) -> pd.DataFrame:
     df = app_train_clean(data_dir, num_rows)
 
     bureau = bureau_and_balance(data_dir, num_rows)
-    print("Bureau df shape:", bureau.shape)
+    logger.info("Bureau df shape: %s", bureau.shape)
     df = df.join(bureau, how="left", on="SK_ID_CURR")
     del bureau
     gc.collect()
 
     prev = previous_applications(data_dir, num_rows)
-    print("Previous applications df shape:", prev.shape)
+    logger.info("Previous applications df shape: %s", prev.shape)
     df = df.join(prev, how="left", on="SK_ID_CURR")
     del prev
     gc.collect()
 
     pos = pos_cash(data_dir, num_rows)
-    print("Pos-cash balance df shape:", pos.shape)
+    logger.info("Pos-cash balance df shape: %s", pos.shape)
     df = df.join(pos, how="left", on="SK_ID_CURR")
     del pos
     gc.collect()
 
     ins = installments_payments(data_dir, num_rows)
-    print("Installments payments df shape:", ins.shape)
+    logger.info("Installments payments df shape: %s", ins.shape)
     df = df.join(ins, how="left", on="SK_ID_CURR")
     del ins
     gc.collect()
 
     cc = credit_card_balance(data_dir, num_rows)
-    print("Credit card balance df shape:", cc.shape)
+    logger.info("Credit card balance df shape: %s", cc.shape)
     df = df.join(cc, how="left", on="SK_ID_CURR")
     del cc
     gc.collect()

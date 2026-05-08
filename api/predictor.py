@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal
 
 import joblib
 import numpy as np
 import pandas as pd
 
-Decision = Literal["GRANTED", "REFUSED"]
+from api.schemas import Decision
 
 
 class CreditScoringPredictor:

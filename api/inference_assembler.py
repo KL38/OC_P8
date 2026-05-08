@@ -90,8 +90,7 @@ def assemble(
 
     # 2. Aggregate portion — lookup or template.
     if sk_id_curr in artefacts.feature_store.index:
-        agg_part = artefacts.feature_store.loc[[sk_id_curr]].copy()
-        agg_part.reset_index(drop=True, inplace=True)
+        agg_part = artefacts.feature_store.loc[[sk_id_curr]].reset_index(drop=True)
         client_known = True
     else:
         agg_part = pd.DataFrame([artefacts.no_history_template])

@@ -35,10 +35,10 @@ def main() -> None:
     feature_names = json.loads(FEATURE_NAMES_PATH.read_text())
     store = pd.read_parquet(FEATURE_STORE_PATH)
 
-    aggregate_cols = [c for c in store.columns]
+    aggregate_cols = list(store.columns)
     print(f"Inspecting {len(aggregate_cols)} aggregate columns...")
 
-    template: dict[str, float | int] = {}
+    template: dict[str, float | int | None] = {}
     count_cols: list[str] = []
     nan_cols: list[str] = []
 
@@ -56,12 +56,12 @@ def main() -> None:
     print("Sample NaN columns:  ", nan_cols[:5])
 
     OUT_TEMPLATE.write_text(json.dumps(template, indent=2))
-    print(f"\n✅ {OUT_TEMPLATE} ({len(template)} entries)")
+    print(f"\n[OK] {OUT_TEMPLATE} ({len(template)} entries)")
 
     # Sanity check: every aggregate column from the store is also in feature_names
     missing = [c for c in aggregate_cols if c not in feature_names]
     if missing:
-        print(f"⚠️  {len(missing)} columns in parquet but absent from feature_names")
+        print(f"[WARN] {len(missing)} columns in parquet but absent from feature_names")
         print(f"   first 5: {missing[:5]}")
 
 

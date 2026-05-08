@@ -40,4 +40,6 @@ HF_DATASET_REPO_ID = os.getenv("OC_P8_HF_DATASET_REPO_ID", "KLEB38/oc-p8-feature
 HF_DATASET_FILENAME = os.getenv("OC_P8_HF_DATASET_FILENAME", "features_store.parquet")
 
 # Default fallback if model_info.json does not expose the optimised threshold.
+# 0.33 minimises the business cost function 10*FN + FP from OC_P6 — re-run the
+# threshold search if the model is retrained.
 DEFAULT_THRESHOLD = 0.33

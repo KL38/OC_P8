@@ -18,7 +18,7 @@ pinned: false
 <div align="center">
   <h1 align="center">OC P8 — Credit Scoring API</h1>
   <p align="center">
-    Production-grade FastAPI wrapper around the XGBoost credit scoring model
+    Production-grade FastAPI wrapper around the LightGBM credit scoring model
     trained in OC_P6. Built for <em>Prêt à Dépenser</em>'s Crédit Express department:
     real-time default risk prediction for loan officers.
     <br />
@@ -63,7 +63,7 @@ pinned: false
 The **Credit Scoring API** exposes a single `POST /predict` endpoint. Given a loan application (`SK_ID_CURR` + 120 raw `application_train` fields), it returns:
 
 - `probability_default` — model score between 0 and 1
-- `decision` — `true` (loan refused) if `proba ≥ 0.33`, `false` (loan granted) otherwise
+- `decision` — `"REFUSED"` if `proba ≥ 0.33`, `"GRANTED"` otherwise
 - `threshold`, `model_version`, `client_known` — explainability metadata
 
 The threshold **0.33** is optimised for an asymmetric cost function (10 × false negatives + false positives), meaning the model is intentionally conservative: missing a bad borrower costs 10× more than wrongly refusing a good one.
@@ -74,7 +74,7 @@ The threshold **0.33** is optimised for an asymmetric cost function (10 × false
 
 [![Python][python-badge]][python-url]
 [![FastAPI][fastapi-badge]][fastapi-url]
-[![XGBoost][xgboost-badge]][xgboost-url]
+[![LightGBM][lightgbm-badge]][lightgbm-url]
 [![uv][uv-badge]][uv-url]
 [![Docker][docker-badge]][docker-url]
 [![GitHub Actions][gha-badge]][gha-url]
@@ -199,14 +199,14 @@ Example response:
 {
   "sk_id_curr": 100001,
   "probability_default": 0.1523,
-  "decision": false,
+  "decision": "GRANTED",
   "threshold": 0.33,
-  "model_version": "xgb-v1.0",
+  "model_version": "2",
   "client_known": true
 }
 ```
 
-`decision: false` = loan **granted** · `decision: true` = loan **refused**
+`decision: "GRANTED"` = loan **granted** · `decision: "REFUSED"` = loan **refused**
 
 You can also use the interactive **Swagger UI** at `/docs` → `POST /predict` → **Try it out**.
 
@@ -249,7 +249,7 @@ JSON {SK_ID_CURR + 120 raw application_train fields}
 | **Known client** | `SK_ID_CURR` found in `features_store.parquet` | Pre-computed bureau / prev / POS / CC / install |
 | **Unknown client** | `SK_ID_CURR` not found | `no_history_template.json` (counts=0, rest NaN) |
 
-The unknown-client path preserves XGBoost's training-time NaN signal ("no historical data") rather than imputing fictitious medians.
+The unknown-client path preserves LightGBM's training-time NaN signal ("no historical data") rather than imputing fictitious medians.
 
 ### Data layer — code/data separation
 
@@ -408,8 +408,8 @@ Internal project — Prêt à Dépenser MLOps formation OpenClassrooms.
 [python-url]: https://www.python.org/
 [fastapi-badge]: https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white
 [fastapi-url]: https://fastapi.tiangolo.com/
-[xgboost-badge]: https://img.shields.io/badge/XGBoost-2.x-F7931E?style=for-the-badge
-[xgboost-url]: https://xgboost.readthedocs.io/
+[lightgbm-badge]: https://img.shields.io/badge/LightGBM-4.x-2E8B57?style=for-the-badge
+[lightgbm-url]: https://lightgbm.readthedocs.io/
 [uv-badge]: https://img.shields.io/badge/uv-package%20manager-DE5FE9?style=for-the-badge
 [uv-url]: https://docs.astral.sh/uv/
 [docker-badge]: https://img.shields.io/badge/Docker-container-2496ED?style=for-the-badge&logo=docker&logoColor=white

@@ -427,3 +427,204 @@ Côté Kevin (manuel, une seule fois) :
 3. Vérifier la présence du parquet sur HF Dataset.
 4. Re-trigger le `workflow_dispatch` du CI → build Docker passe, Space
    démarre, lifespan télécharge le parquet une fois et le cache.
+
+---
+
+## Session 2026-05-08 — Code review complète + Tier 1 cleanup
+
+Quatre subagents lancés en parallèle (python-reviewer, security-reviewer,
+code-reviewer, architect) sur l'ensemble du repo. Tests post-cleanup :
+**45/45 pass, ruff clean, coverage 96.56 %**.
+
+### Fix critique de la session : libgomp.so.1 sur HF Space
+
+`OSError: libgomp.so.1: cannot open shared object file` au cold start.
+LightGBM dépend d'OpenMP au runtime, absent de `python:3.12-slim`.
+
+**Faux ami `packages.txt`** : ce fichier n'est lu par HF Spaces que pour
+`sdk: gradio` ou `sdk: streamlit`. Pour `sdk: docker`, **il est ignoré** —
+les paquets système doivent être installés dans le `Dockerfile` via
+`apt-get`.
+
+Fix appliqué (Dockerfile) :
+
+```dockerfile
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+`packages.txt` supprimé du repo.
+
+### Tier 1 — fixes appliqués (12 items, zéro changement comportemental)
+
+| Fichier | Fix |
+|---------|-----|
+| `api/inference_assembler.py:93` | drop `inplace=True` après `.copy()` |
+| `api/main.py:115-117` | comment FR retiré, return type, tag `meta` |
+| `api/predictor.py` + `api/schemas.py` | `Decision` dédupliqué (DRY) |
+| `api/schemas.py` | `Optional[X]` → `X \| None` (PEP 604, Pydantic v2) |
+| `feature_engineering/aggregations.py:201-202` | `.apply(lambda)` → `.clip(lower=0)` |
+| `feature_engineering/orchestrator.py` | `print()` → `logger.info()` |
+| `scripts/build_no_history_template.py` | `list(...)`, type widening `\| None` |
+| `scripts/export_model.py:55` | guard `if mv.run_id is None` (mypy) |
+| `scripts/export_model.py` | emojis `✅⚠️` → `[OK]`/`[WARN]` |
+| `api/settings.py:42-44` | comment expliquant le seuil 0.33 |
+| `README.md` | XGBoost → LightGBM (5 occurrences + badge) |
+| `README.md` | exemple `decision: "GRANTED"` au lieu de `false` |
+
+### Tier 2 — suggestions reportées (à attaquer plus tard si besoin)
+
+#### A. Split deps prod / offline → image Docker -700 MB à -1 GB
+
+`pyproject.toml` actuellement liste comme deps prod : `mlflow`, `optuna`,
+`shap`, `xgboost`, `jupyter`, `ipykernel`, `matplotlib`, `seaborn`,
+`plotly`. Aucune n'est importée par `api/`. Plan :
+
+```toml
+[project]
+dependencies = [
+    "fastapi>=0.136.1",
+    "huggingface-hub>=1.14.0",
+    "joblib",            # ajouter explicitement
+    "lightgbm>=4.0.0",
+    "numpy>=2.4.3",
+    "pandas==2.3.3",
+    "pyarrow>=23.0.1",
+    "pydantic>=2.13.3",
+    "uvicorn[standard]>=0.46.0",
+]
+
+[dependency-groups]
+dev = ["httpx", "pytest", "pytest-cov", "ruff", "mypy"]
+offline = [
+    "mlflow>=2.18,<3", "optuna", "shap", "xgboost", "matplotlib",
+    "seaborn", "plotly", "jupyter", "ipykernel",
+]
+```
+
+Dockerfile reste sur `uv sync --frozen --no-dev` (le groupe offline est
+exclu par défaut sauf si activé).
+
+**Risque** : faible. Vérifier que `api/predictor.py` n'importe pas mlflow
+au runtime (à confirmer — le modèle est désérialisé via joblib mais
+`joblib.load` peut tirer mlflow lors de l'unpickle si le modèle est un
+`PyFuncModel`). Si oui → alternative : option B ci-dessous.
+
+#### B. Re-export modèle en LightGBM Booster natif → 3-5× faster + supprime mlflow
+
+Actuellement `models/model.joblib` est un `mlflow.pyfunc.PyFuncModel`
+contenant le Booster. À l'inférence on appelle `model.predict(df)` qui
+re-route via le wrapper PyFunc.
+
+Plan :
+
+```python
+# Dans OC_P6, à côté de la sauvegarde MLflow :
+booster = lgbm_model.booster_   # ou .estimator.booster_ si pipeline
+booster.save_model("models/model.txt")
+```
+
+Côté API (`predictor.py`) :
+
+```python
+import lightgbm as lgb
+model = lgb.Booster(model_file=str(model_path))
+proba = model.predict(features.values)[0]
+```
+
+**Bénéfice** : élimine mlflow du runtime (déblocage du A), latence
+3-5× plus faible sur single-row, image plus légère.
+
+**Risque** : moyen. Demande un test de parité (probabilité identique
+±1e-9 entre l'ancien et le nouveau modèle sur un échantillon de 1000
+clients).
+
+#### C. Multi-stage Dockerfile + pin base image
+
+```dockerfile
+FROM python:3.12.10-slim AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.5.4 /uv /usr/local/bin/uv
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+FROM python:3.12.10-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+WORKDIR /app
+COPY api/ ./api/
+COPY models/ ./models/
+EXPOSE 7860
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "7860"]
+```
+
+**Bénéfice** : -100-200 MB sur l'image finale (pas de cache uv,
+pas de build-essential), reproductibilité (digest pinning possible
+en remplaçant `:3.12.10-slim` par `@sha256:...`).
+
+**Risque** : minimal.
+
+#### D. DataFrame downcast au cold start → RAM -40-60 %
+
+Le parquet (235 MB sur disque) → ~1.0-1.8 GB en RAM avec dtypes par défaut
+(float64, int64). Conversion :
+
+```python
+# Dans InferenceArtefacts.load() :
+feature_store = pd.read_parquet(feature_store_path)
+for col in feature_store.select_dtypes(include="float64").columns:
+    feature_store[col] = feature_store[col].astype("float32")
+for col in feature_store.select_dtypes(include="int64").columns:
+    feature_store[col] = pd.to_numeric(feature_store[col], downcast="integer")
+```
+
+**Bénéfice** : RAM 600-900 MB au lieu de 1-1.8 GB, `.loc` plus rapide.
+
+**Risque** : faible si LightGBM a été entraîné sur float32 (à vérifier ;
+si entraîné float64, faible perte de précision sur les agrégats — à
+mesurer via test de parité).
+
+#### E. Précompute numpy template → latence -5 à -15 ms par requête
+
+Le hot path actuel fait `pd.DataFrame([raw])` + `pd.Categorical` × 14 +
+`get_dummies` + `concat` + `reindex(768)` + `replace(inf, nan)` pour
+chaque requête. Plan : remplacer par une copie de template numpy pré-aligné
+sur `feature_names`, avec un mapping `name → index` calculé une fois au boot.
+
+**Bénéfice** : élimine pandas du hot path, latence p50 probablement de
+20-40 ms à 3-8 ms.
+
+**Risque** : moyen. Demande un golden-file test exhaustif vs assemble()
+actuel (sortie strictement identique sur ≥100 cas couvrant les deux
+branches connu/inconnu, toutes les catégorielles).
+
+#### F. Sécurité advisory (non bloquant pour formation OC)
+
+- **Rate limiting** : `slowapi` per-IP sur `/predict` (10 req/min).
+- **CORS** : `CORSMiddleware` avec `allow_origins=["https://...your-frontend..."]`.
+- **API key** : header `X-API-Key` via dépendance FastAPI si besoin
+  d'auth simple.
+- **Non-root user dans Dockerfile** : `RUN useradd -m appuser && USER appuser`
+  (HF Spaces enforce déjà un user namespace, mais defense-in-depth).
+
+À faire **uniquement** si l'API doit être exposée à du trafic réel.
+
+### Findings non-bloquants laissés tels quels
+
+- **Chemins absolus** dans `scripts/build_feature_store.py:41`,
+  `scripts/export_model.py:27-30`, `scripts/check_registry.py:4` —
+  scripts personnels one-shot, pas de gain immédiat à env-var-iser.
+- **CI action versions** (`actions/checkout@v6`, `setup-python@v6`,
+  `upload-artifact@v7`) — flagged par code-reviewer comme non-existantes,
+  mais le CI tourne, donc soit elles existent, soit GitHub résout
+  silencieusement. Non-bloquant.
+- **Duplication ratios** offline / runtime (orchestrator vs `api/ratios.py`)
+  — intentionnelle et confirmée par 2 reviewers (le runtime a besoin du
+  scrub `inf → NaN` que le offline n'a pas).
+- **`joblib.load` pickle-based** — modèle baked-in à l'image build,
+  pas un vecteur d'attaque exploitable.
