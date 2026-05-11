@@ -14,21 +14,13 @@ from api.predictor import CreditScoringPredictor
 
 
 class _FixedProbModel:
+    """Fake sklearn-style classifier exposing predict_proba."""
+
     def __init__(self, proba: float) -> None:
         self.proba = proba
 
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
+    def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
         return np.array([[1 - self.proba, self.proba]])
-
-
-class _WeirdModel:
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
-        return np.array([[[0.1, 0.9]]])  # 3D — invalid
-
-
-class _FlatModel:
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
-        return np.array([0.6])
 
 
 def _write_model_info(path: Path, threshold: float, version: str = "test-1") -> None:
@@ -94,23 +86,32 @@ def test_proba_in_unit_interval(tmp_path):
     assert 0.0 <= proba <= 1.0
 
 
-def test_unexpected_prediction_shape_raises(tmp_path):
+def test_proba_is_continuous_not_label(tmp_path):
+    """Regression: predict() must return predict_proba output, not class labels."""
+    pred = _build(tmp_path, proba=0.27, threshold=0.5)
+    proba, _ = pred.predict(pd.DataFrame([{}]))
+    assert proba == pytest.approx(0.27)
+    assert proba not in (0.0, 1.0)
+
+
+def test_pyfunc_wrapper_is_unwrapped(tmp_path):
+    """A PyFunc-style wrapper exposing get_raw_model() must be unwrapped on load."""
+
+    class _PyFuncLike:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def get_raw_model(self):
+            return self._inner
+
+        # PyFunc.predict() would return labels — must NOT be called.
+        def predict(self, df):
+            raise AssertionError("PyFunc.predict() should not be called")
+
     info = tmp_path / "info.json"
     _write_model_info(info, 0.5)
     model = tmp_path / "model.joblib"
-    joblib.dump(_WeirdModel(), model)
+    joblib.dump(_PyFuncLike(_FixedProbModel(0.42)), model)
     pred = CreditScoringPredictor.load(model, info, default_threshold=0.5)
-    with pytest.raises(ValueError, match="Unexpected prediction shape"):
-        pred.predict(pd.DataFrame([{}]))
-
-
-def test_1d_array_prediction_supported(tmp_path):
-    """Some PyFunc wrappers return a 1D probability array — supported too."""
-    info = tmp_path / "info.json"
-    _write_model_info(info, 0.5)
-    model = tmp_path / "model.joblib"
-    joblib.dump(_FlatModel(), model)
-    pred = CreditScoringPredictor.load(model, info, default_threshold=0.5)
-    proba, decision = pred.predict(pd.DataFrame([{}]))
-    assert proba == pytest.approx(0.6)
-    assert decision == "REFUSED"
+    proba, _ = pred.predict(pd.DataFrame([{}]))
+    assert proba == pytest.approx(0.42)

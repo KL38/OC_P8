@@ -172,13 +172,13 @@ VALID_PAYLOAD: dict[str, Any] = {
 
 
 class FakeModel:
-    """Minimal stand-in for the real LightGBM PyFunc.
+    """Minimal stand-in for the unwrapped LightGBM sklearn classifier.
 
     Returns a probability driven by AMT_INCOME_TOTAL / AMT_CREDIT so tests can
     deterministically exercise both GRANTED and REFUSED branches.
     """
 
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
+    def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
         income = float(df.iloc[0].get("AMT_INCOME_TOTAL", 0) or 0)
         credit = float(df.iloc[0].get("AMT_CREDIT", 1) or 1)
         ratio = income / max(credit, 1)

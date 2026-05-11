@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 
 import joblib
-import numpy as np
 import pandas as pd
 
 from api.schemas import Decision
@@ -33,7 +32,10 @@ class CreditScoringPredictor:
         model_info_path: Path,
         default_threshold: float,
     ) -> "CreditScoringPredictor":
-        model = joblib.load(model_path)
+        loaded = joblib.load(model_path)
+        # MLflow PyFunc wraps the sklearn model; unwrap so we can call
+        # predict_proba (PyFunc.predict() returns class labels, not probas).
+        model = loaded.get_raw_model() if hasattr(loaded, "get_raw_model") else loaded
 
         info = json.loads(model_info_path.read_text())
         metrics = info.get("metrics", {})
@@ -58,14 +60,5 @@ class CreditScoringPredictor:
 
     def _predict_proba(self, features: pd.DataFrame) -> float:
         """Extract the positive-class probability from the underlying model."""
-        raw = self._model.predict(features)
-
-        # MLflow PyFunc models return arrays; sklearn classifiers return 2D probs.
-        arr = np.asarray(raw)
-        if arr.ndim == 2 and arr.shape[1] == 2:
-            return float(arr[0, 1])
-        if arr.ndim == 1:
-            return float(arr[0])
-        raise ValueError(
-            f"Unexpected prediction shape {arr.shape}; expected (n,) or (n, 2)."
-        )
+        proba = self._model.predict_proba(features)
+        return float(proba[0, 1])
