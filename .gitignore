@@ -85,3 +85,6 @@ logs/
 *.log
 scratch/
 tmp/
+
+# enlever claude au cas ou on ait des secrets dedans
+.claude/
