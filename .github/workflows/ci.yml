@@ -1,4 +1,4 @@
-name: CI
+name: CI_CD
 
 on:
   push:
@@ -11,8 +11,8 @@ env:
   PYTHON_VERSION: "3.12"
 
 jobs:
-  test:
-    name: pytest + coverage
+  build_and_test:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -53,8 +53,8 @@ jobs:
 
   deploy:
     name: Deploy to Hugging Face Space
-    needs: test
-    if: github.event_name == 'workflow_dispatch'
+    needs: build_and_test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -62,19 +62,7 @@ jobs:
           fetch-depth: 0
           lfs: true
 
-      - name: Push to Hugging Face Space
+      - name: Push to Hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          pip install huggingface_hub
-          python - <<'EOF'
-          import os
-          from huggingface_hub import HfApi
-          api = HfApi(token=os.environ["HF_TOKEN"])
-          api.upload_folder(
-              folder_path=".",
-              repo_id="KLEB38/OC_P8",
-              repo_type="space",
-              ignore_patterns=[".git", ".github", ".venv", ".claude", "__pycache__", "*.pyc", "data/"],
-          )
-          EOF
+        run: git push --force https://KLEB38:$HF_TOKEN@huggingface.co/spaces/KLEB38/OC_P8 main
