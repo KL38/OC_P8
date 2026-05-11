@@ -27,6 +27,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # bundled — it lives in a separate HF Dataset repo and is fetched at runtime
 # via huggingface_hub (see api/main.py::_resolve_feature_store_path).
 COPY api/ ./api/
+COPY database/ ./database/
 COPY models/ ./models/
 
 # Sanity: fail fast at build time if the artefacts the API needs are missing.
