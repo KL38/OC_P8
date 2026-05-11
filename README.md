@@ -389,11 +389,90 @@ pyproject.toml
 
 ---
 
+## Monitoring & Data Drift (Étape 3)
+
+Every `/predict` call is logged to a Supabase PostgreSQL table
+(`predictions_log`) for production observability and drift analysis.
+
+### Stack
+
+| Component | Purpose | Location |
+|---|---|---|
+| Supabase Postgres | Storage for prediction logs | `database/` |
+| `api/logger.py` | Synchronous insert on every request, best-effort | `api/` |
+| Evidently | Generates a feature-drift HTML report | `scripts/generate_drift_report.py` |
+| Streamlit dashboard | Reads Supabase + embeds Evidently HTML | `dashboard/`, deployed at `KLEB38/OC_P8_monitoring` |
+
+### Schema (`predictions_log`)
+
+One row per request. Metadata in proper columns; the 121 raw inputs and
+the 768 engineered features are kept in JSONB to absorb PostgreSQL's
+63-char identifier limit and stay flexible if the feature pipeline evolves.
+
+```
+id (uuid) | timestamp (tz) | sk_id_curr | client_known | latency_ms
+status_code | error_message | raw_input (jsonb) | features (jsonb)
+probability_default | decision | threshold | model_version
+top_shap (jsonb, nullable) | ground_truth (nullable)
+```
+
+### Initial setup (once)
+
+```powershell
+# .env file: DATABASE_URL=postgresql://...   (gitignored, never commit)
+uv run python -m database.setup --create
+```
+
+A separate table `predictions_log_test` is created in the same DB for
+CI/integration tests — production data is never polluted.
+
+### Generate the drift report
+
+```powershell
+# 1. Build the frozen reference (10k stratified rows from training)
+uv run python scripts/build_reference_dataset.py --upload
+
+# 2. Compare last 30 days of prod vs reference
+uv run python scripts/generate_drift_report.py --days 30
+# -> dashboard/static/drift_report.html
+```
+
+### Run the dashboard locally
+
+```powershell
+$env:DATABASE_URL = "postgresql://..."
+cd dashboard && uv run streamlit run app.py
+# http://localhost:8501
+```
+
+### Deploy the dashboard
+
+```powershell
+$env:HF_TOKEN = "hf_..."
+uv run python scripts/deploy_dashboard.py
+```
+
+`DATABASE_URL` must be set as a Space secret on `KLEB38/OC_P8_monitoring`.
+A read-only Supabase role is recommended.
+
+### Interpretation guide
+
+- **Ops tab** — Total volume, error rate, latency p50/p95 by hour,
+  `probability_default` histogram split by decision.
+- **Drift tab** — embedded Evidently report. Watch the
+  *"Share of Drifted Features"* indicator (>30 % typically warrants
+  retraining or threshold revision).
+- **Business tab** — GRANTED / REFUSED ratio, known / unknown client mix,
+  last 50 raw calls.
+
+---
+
 ## Roadmap
 
-- [ ] **Étape 3** — Structured request logging + Evidently AI drift report + Streamlit monitoring dashboard
+- [x] **Étape 3** — Supabase logging + Evidently drift + Streamlit dashboard
 - [ ] **Étape 4** — Profiling, ONNX export, latency optimisation
 - [ ] Top-N SHAP contributors in `PredictionResponse` for loan officer explainability
+- [ ] Concept drift via `ground_truth` feedback collection
 
 ---
 

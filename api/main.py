@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from api import settings
+from api import db, settings
 from api.inference_assembler import InferenceArtefacts, assemble
+from api.logger import log_prediction
 from api.predictor import CreditScoringPredictor
 from api.schemas import (
     HealthResponse,
@@ -88,7 +90,14 @@ async def lifespan(app: FastAPI):
     # Cache model_info for the /model/info route.
     app.state.model_info = json.loads(settings.MODEL_INFO_PATH.read_text())
 
+    # Best-effort: initialise the prediction logger. If DATABASE_URL is unset
+    # or the database is unreachable, the API still serves predictions but
+    # without persistence.
+    db.init_engine()
+
     yield
+
+    db.reset_engine()
 
 
 app = FastAPI(
@@ -142,22 +151,48 @@ async def predict(payload: PredictionRequest, request: Request) -> PredictionRes
     artefacts = request.app.state.artefacts
     predictor: CreditScoringPredictor = request.app.state.predictor
 
+    started = time.perf_counter()
+    features = None
+    client_known = False
+    proba: float | None = None
+    decision: str | None = None
+    status_code = status.HTTP_200_OK
+    error_message: str | None = None
+
     try:
         features, client_known = assemble(raw_inputs, sk_id_curr=sk_id, artefacts=artefacts)
+        proba, decision = predictor.predict(features)
+        return PredictionResponse(
+            sk_id_curr=sk_id,
+            probability_default=proba,
+            decision=decision,
+            threshold=predictor.threshold,
+            model_version=predictor.model_version,
+            client_known=client_known,
+        )
+    except HTTPException as http_exc:
+        status_code = http_exc.status_code
+        error_message = str(http_exc.detail)
+        raise
     except Exception as exc:
-        logger.exception("Failed to assemble features for sk_id=%s", sk_id)
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        error_message = f"{exc.__class__.__name__}: {exc}"
+        logger.exception("Failed to predict for sk_id=%s", sk_id)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Feature assembly failed: {exc.__class__.__name__}",
+            status_code=status_code,
+            detail=f"Prediction failed: {exc.__class__.__name__}",
         ) from exc
-
-    proba, decision = predictor.predict(features)
-
-    return PredictionResponse(
-        sk_id_curr=sk_id,
-        probability_default=proba,
-        decision=decision,
-        threshold=predictor.threshold,
-        model_version=predictor.model_version,
-        client_known=client_known,
-    )
+    finally:
+        log_prediction(
+            sk_id_curr=sk_id,
+            client_known=client_known,
+            raw_input=raw_inputs,
+            features=features,
+            probability_default=proba,
+            decision=decision,
+            threshold=predictor.threshold,
+            model_version=predictor.model_version,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            status_code=status_code,
+            error_message=error_message,
+        )

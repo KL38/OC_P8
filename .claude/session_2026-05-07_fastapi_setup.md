@@ -249,10 +249,13 @@ Travaux à prévoir :
 ## Choix techniques notables (pour future référence)
 
 ### Modèle chargé via mlflow.pyfunc puis joblib.dump
-- Le modèle exporté de OC_P6 est `MLflow PyFuncModel`
-- `predictor._predict_proba()` gère 2 shapes : `(n,)` ou `(n, 2)`
-- Si LightGBM natif est ré-extrait plus tard, refactor de `_predict_proba`
-  trivial.
+- Le modèle exporté de OC_P6 est `MLflow PyFuncModel` qui wrap un
+  `lightgbm.sklearn.LGBMClassifier`.
+- **`PyFuncModel.predict()` renvoie des labels (0/1), pas des probabilités.**
+  Le predictor doit donc unwrap via `get_raw_model()` puis appeler
+  `predict_proba()[0, 1]`. Voir session 2026-05-11 pour l'historique du bug.
+- Le seuil 0.33 n'est **pas** dans le joblib — c'est une métrique MLflow
+  copiée dans `model_info.json`, appliquée explicitement côté code.
 
 ### Tests : isolation totale du code prod
 - `conftest.py` génère synthetic_artefacts_dir avec mini-parquet, mini-JSONs,
@@ -628,3 +631,148 @@ branches connu/inconnu, toutes les catégorielles).
   scrub `inf → NaN` que le offline n'a pas).
 - **`joblib.load` pickle-based** — modèle baked-in à l'image build,
   pas un vecteur d'attaque exploitable.
+
+---
+
+## Session 2026-05-11 — Fix bug prédiction + différenciation examples
+
+Session déclenchée par une observation utilisateur en testant les exemples
+`Example_JSON/examples.md` : la `probability_default` renvoyée par l'API
+valait toujours `0.0` ou `1.0`, jamais un float continu. Audit, fix,
+refactor élégant, et amélioration des exemples.
+
+### Bug critique : `predict()` au lieu de `predict_proba()`
+
+`api/predictor.py` chargeait le modèle via `joblib.load()` et appelait
+`self._model.predict(features)`. Or l'objet stocké est un
+`mlflow.pyfunc.PyFuncModel` wrappant un `LGBMClassifier` — et la méthode
+`predict()` de PyFunc renvoie les **labels de classe** (0/1), pas des
+probabilités.
+
+**Conséquences silencieuses** :
+
+1. `probability_default` envoyée au client était toujours 0.0 ou 1.0.
+2. La comparaison `proba >= self._threshold` (où threshold=0.33)
+   fonctionnait par hasard : `0.0 >= 0.33 → False → GRANTED`,
+   `1.0 >= 0.33 → True → REFUSED`. La décision finale était cohérente.
+3. **Mais le seuil métier 0.33 (optimisé pour `10*FN + FP` dans OC_P6)
+   n'était jamais réellement appliqué.** Le modèle décidait avec son
+   seuil interne de 0.5 (sklearn default), neutralisant tout le travail
+   d'optimisation du coût métier.
+4. Dashboard / SHAP local / jauge de risque : tous fournis avec des
+   probas binaires inutilisables.
+
+Le `README.md:236` documentait pourtant correctement `model.predict_proba()[:, 1]`
+— c'est le code qui ne respectait pas la spec.
+
+### Tests qui passaient avec le bug (AI blind spot)
+
+Les fakes `_FixedProbModel`, `_WeirdModel`, `_FlatModel` dans
+`test_predictor.py` exposaient tous une méthode `predict()` renvoyant des
+**probas 2D**. Cela ne correspondait à **aucun comportement réel** : ni
+PyFunc (qui renvoie 1D labels), ni sklearn (qui renvoie 1D labels via
+`.predict()` ou 2D probas via `.predict_proba()`). Les tests étaient
+écrits avec la même hypothèse erronée que le code → ils validaient le
+bug au lieu de l'attraper.
+
+Pattern à retenir : quand un fake est défini par l'agent qui écrit aussi
+le code, vérifier que le fake reproduit le **vrai contrat** de
+l'interface qu'il simule, pas l'usage attendu côté appelant.
+
+### Vérification que le threshold n'est pas dans le joblib
+
+Doute exprimé par l'utilisateur : *"le seuil n'est-il pas dans le joblib
+qui vient d'OC_P5/P6 ?"*. Vérification empirique + lecture du notebook
+`OC_P6/notebooks/Optimisation.ipynb` :
+
+- `find_best_threshold()` calcule le seuil par cross-val et le retourne
+  comme un `float`.
+- Le seuil est ensuite **loggé en métrique MLflow** : `mlflow.log_metric("best_threshold_mean", ...)`.
+- Le modèle est sauvegardé via `mlflow.lightgbm.log_model(model, ...)`
+  (flavor lightgbm standard, pas de pyfunc custom, pas de signature
+  injectant un seuil).
+- Le seuil est appliqué **à l'extérieur** du modèle dans tout le
+  notebook : `preds = (preds_proba >= thresh).astype(int)`.
+- L'objet joblib n'a **aucun attribut threshold** (vérifié via
+  `dir(model)`).
+
+Conclusion : le seuil 0.33 vit uniquement dans
+`models/model_info.json::metrics.best_threshold_mean`. L'API doit
+l'appliquer manuellement, ce qu'elle faisait déjà correctement —
+le problème était bien isolé à la prédiction.
+
+### Fix initial puis refactor élégant
+
+**V1 (fix minimal, complexe)** :
+- `load()` faisait l'unwrap PyFunc via
+  `loaded.get_raw_model() if hasattr(loaded, "get_raw_model") else loaded`
+- `_predict_proba()` privée à 2 lignes
+- Test `test_pyfunc_wrapper_is_unwrapped` créait une classe `_PyFuncLike`
+  **locale** (inside la fonction), passait par `joblib.dump` → cassait
+  sur Linux CI avec `PicklingError: Can't pickle <class '<locals>.PyFuncLike'>`.
+- Workaround appliqué : remonter `_PyFuncLike` au niveau module.
+- 8 tests dans `test_predictor.py`, plusieurs redondants.
+
+**V2 (refactor demandé par l'utilisateur — "je veux de l'élégance et de
+l'efficacité")** :
+- **Unwrap déplacé de `load()` vers `__init__`** : la responsabilité
+  "j'accepte un model-like et je l'utilise correctement" devient une
+  propriété de l'objet, pas de la factory. On peut tester l'unwrap par
+  injection directe — plus besoin de passer par `joblib.dump`.
+- **`_predict_proba()` supprimée** : inlinée dans `predict()`.
+  `predict()` tient en 3 lignes lisibles d'un coup d'œil.
+- **`load()` aplati** : ne fait plus que lire les fichiers et déléguer
+  à `__init__`.
+- **8 tests → 5 logiques (44 runs vs 45)** : `test_decision_logic`
+  parametrize 3 cas (below / above / boundary). `test_proba_in_unit_interval`
+  supprimé (redondant). `_PyFuncLike` remis dans la fonction du test —
+  plus de pickle, donc plus de problème CI.
+
+### Examples.md repensés : 5 profils différenciés
+
+**Problème observé** : avec les SK_ID_CURR 100001/100002/100003 (qui
+**existent** dans `features_store.parquet` — 353 895 clients de 100001
+à 456255), le score combinait inputs `app_train` + historique réel
+agrégé. Les 3 narratifs (faible/moyen/haut) donnaient 6 % / 56 % / 59 %
+— spread trop serré pour bien démontrer le modèle.
+
+**Méthode** : sampling de 200 SK_ID au hasard, score avec un payload
+neutre → distribution `p10=0.30, p50=0.49, p90=0.72`. Sélection de
+3 SK_ID au profil naturel contrasté.
+
+| # | Profil | SK_ID | client_known | proba | décision |
+|---|---|---|---|---|---|
+| 1 | Faible risque (cadre stable) | 282751 | ✓ | **1,93 %** | GRANTED |
+| 2 | Risque moyen (employé) | 207397 | ✓ | **48,06 %** | REFUSED |
+| 3 | Haut risque (jeune précaire) | 244757 | ✓ | **93,37 %** | REFUSED |
+| 4 | Nouveau client — bon profil | 999001 | ✗ | **1,50 %** | GRANTED |
+| 5 | Nouveau client — mauvais profil | 999002 | ✗ | **92,17 %** | REFUSED |
+
+Observation : profils 1 vs 4 (1,93 % vs 1,50 %) et 3 vs 5 (93,37 % vs
+92,17 %) sont quasi identiques → quand les signaux app_train sont très
+marqués (EXT_SOURCE extrêmes), l'historique bureau/prev/POS/CC apporte
+peu, ce qui est cohérent avec le SHAP global du modèle.
+
+### Fichiers modifiés
+
+| Fichier | Changement |
+|---------|------------|
+| `api/predictor.py` | Unwrap PyFunc dans `__init__`, inline `predict_proba`, suppression `_predict_proba` |
+| `tests/conftest.py` | `FakeModel.predict()` → `predict_proba()` |
+| `tests/unit/test_predictor.py` | Refactor : parametrize, `_FakeClassifier`, injection directe pour le test PyFunc, `_PyFuncLike` local |
+| `Example_JSON/examples.md` | 3 SK_ID known recalibrés + 2 nouveaux exemples unknown (999001/999002), intro mise à jour |
+
+### Tests post-refacto
+
+44/44 passent (vs 45 avant — un test redondant supprimé), coverage
+`api/predictor.py` toujours 100 %, gate 80 % OK.
+
+### Régression empêchée
+
+Deux nouveaux tests gardent le sol contre la résurgence du bug :
+- `test_proba_is_continuous_not_label` : si quelqu'un remet `predict()`
+  un jour, ce test casse car la proba retournée sera 0 ou 1 au lieu de
+  0.27.
+- `test_pyfunc_wrapper_is_unwrapped` : injecte un `_PyFuncLike` dont
+  `predict()` lève une `AssertionError`. Si l'unwrap disparaît, le test
+  casse immédiatement avec un message explicite.
