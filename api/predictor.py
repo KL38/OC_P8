@@ -21,7 +21,9 @@ class CreditScoringPredictor:
     """Singleton-style wrapper. Build once via load(), reuse for every request."""
 
     def __init__(self, model, threshold: float, model_version: str) -> None:
-        self._model = model
+        # MLflow PyFunc wraps the sklearn model; unwrap so we can call
+        # predict_proba (PyFunc.predict() returns class labels, not probas).
+        self._model = model.get_raw_model() if hasattr(model, "get_raw_model") else model
         self._threshold = threshold
         self._model_version = model_version
 
@@ -32,17 +34,13 @@ class CreditScoringPredictor:
         model_info_path: Path,
         default_threshold: float,
     ) -> "CreditScoringPredictor":
-        loaded = joblib.load(model_path)
-        # MLflow PyFunc wraps the sklearn model; unwrap so we can call
-        # predict_proba (PyFunc.predict() returns class labels, not probas).
-        model = loaded.get_raw_model() if hasattr(loaded, "get_raw_model") else loaded
-
         info = json.loads(model_info_path.read_text())
-        metrics = info.get("metrics", {})
-        threshold = float(metrics.get("best_threshold_mean", default_threshold))
-        version = str(info.get("version", "unknown"))
-
-        return cls(model=model, threshold=threshold, model_version=version)
+        threshold = float(info.get("metrics", {}).get("best_threshold_mean", default_threshold))
+        return cls(
+            model=joblib.load(model_path),
+            threshold=threshold,
+            model_version=str(info.get("version", "unknown")),
+        )
 
     @property
     def threshold(self) -> float:
@@ -54,11 +52,6 @@ class CreditScoringPredictor:
 
     def predict(self, features: pd.DataFrame) -> tuple[float, Decision]:
         """Return (probability_of_default, decision)."""
-        proba = self._predict_proba(features)
+        proba = float(self._model.predict_proba(features)[0, 1])
         decision: Decision = "REFUSED" if proba >= self._threshold else "GRANTED"
         return proba, decision
-
-    def _predict_proba(self, features: pd.DataFrame) -> float:
-        """Extract the positive-class probability from the underlying model."""
-        proba = self._model.predict_proba(features)
-        return float(proba[0, 1])
