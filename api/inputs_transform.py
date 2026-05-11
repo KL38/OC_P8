@@ -47,7 +47,11 @@ def transform_app_train_inputs(
     Output is missing the 5 derived ratios — pipe through
     api.ratios.apply_derived_ratios() afterward.
     """
-    df = pd.DataFrame([raw])
+    # JSON null → Python None. Convert to np.nan so numeric columns keep a
+    # float dtype and reach LightGBM as NaN (its native missing-value signal),
+    # rather than object-dtype None which the booster cannot consume.
+    normalised = {k: (np.nan if v is None else v) for k, v in raw.items()}
+    df = pd.DataFrame([normalised])
 
     for col in BINARY_COLUMNS:
         if col in df.columns:
