@@ -33,15 +33,29 @@ jobs:
         run: uv sync --frozen
 
       - name: Lint (ruff)
-        run: uv run ruff check api feature_engineering tests
+        run: uv run ruff check api database feature_engineering tests
+
+      - name: Ensure test table exists in Supabase
+        if: env.TEST_DATABASE_URL != ''
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+        run: uv run python -m database.setup --create-test --database-url "$TEST_DATABASE_URL"
 
       - name: Run tests with coverage
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
         run: |
           uv run pytest \
             --cov=api \
             --cov-report=term-missing \
             --cov-report=xml \
             --cov-fail-under=80
+
+      - name: Truncate test table (cleanup)
+        if: always() && env.TEST_DATABASE_URL != ''
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+        run: uv run python -m database.setup --truncate-test --database-url "$TEST_DATABASE_URL"
 
       - name: Upload coverage report
         if: always()
@@ -75,6 +89,10 @@ jobs:
               folder_path=".",
               repo_id="KLEB38/OC_P8",
               repo_type="space",
-              ignore_patterns=[".git", ".github", ".venv", ".claude", "__pycache__", "*.pyc", "data/"],
+              ignore_patterns=[
+                  ".git", ".github", ".venv", ".claude",
+                  "__pycache__", "*.pyc",
+                  "data/", "dashboard/", "database/.env",
+              ],
           )
           EOF

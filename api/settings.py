@@ -43,3 +43,10 @@ HF_DATASET_FILENAME = os.getenv("OC_P8_HF_DATASET_FILENAME", "features_store.par
 # 0.33 minimises the business cost function 10*FN + FP from OC_P6 — re-run the
 # threshold search if the model is retrained.
 DEFAULT_THRESHOLD = 0.33
+
+# Supabase / PostgreSQL connection. When unset, the prediction logger is
+# disabled gracefully (the API keeps serving, just without persistence).
+# The logger writes to PREDICTIONS_TABLE — overridable so integration tests
+# can target predictions_log_test via env without code changes.
+DATABASE_URL = os.getenv("DATABASE_URL")
+PREDICTIONS_TABLE = os.getenv("OC_P8_PREDICTIONS_TABLE", "predictions_log")

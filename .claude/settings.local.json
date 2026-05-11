@@ -13,7 +13,9 @@
       "PowerShell(uv run ruff check api feature_engineering tests scripts)",
       "PowerShell(uv run pytest --cov=api --cov-fail-under=80 -q)",
       "Bash(ls \"C:/Users/Kevin/projects/OC_P6/notebooks/\" 2>&1)",
-      "Read(//c/Users/Kevin/projects/OC_P6/notebooks/**)"
+      "Read(//c/Users/Kevin/projects/OC_P6/notebooks/**)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'n={len\\(d\\)}'\\); print\\('first 3:', d[:3]\\); print\\('last 3:', d[-3:]\\)\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); over=[n for n in d if len\\(n\\) > 63]; print\\(f'over 63 chars: {len\\(over\\)}'\\); maxlen=max\\(len\\(n\\) for n in d\\); print\\(f'max len: {maxlen}'\\); print\\('top 5 longest:', sorted\\(d, key=len, reverse=True\\)[:5]\\)\")"
     ]
   }
 }

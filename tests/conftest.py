@@ -288,6 +288,9 @@ def synthetic_artefacts_dir(tmp_path: Path, synthetic_feature_names: list[str]) 
 def patched_settings(monkeypatch, synthetic_artefacts_dir: Path) -> None:
     """Point api.settings at the synthetic artefacts (re-import safe)."""
     base = synthetic_artefacts_dir
+    # Force the prediction logger to no-op for unit/integration FastAPI tests
+    # so they don't accidentally hit a developer's local DATABASE_URL.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("OC_P8_MODEL_PATH", str(base / "models" / "model.joblib"))
     monkeypatch.setenv("OC_P8_MODEL_INFO_PATH", str(base / "models" / "model_info.json"))
     monkeypatch.setenv(
@@ -315,6 +318,12 @@ def patched_settings(monkeypatch, synthetic_artefacts_dir: Path) -> None:
     import api.settings as s
 
     importlib.reload(s)
+
+    # Also reset the lazy DB engine so a previous test's connection isn't
+    # leaked into this one (important when DATABASE_URL was set elsewhere).
+    from api import db
+
+    db.reset_engine()
 
 
 @pytest.fixture

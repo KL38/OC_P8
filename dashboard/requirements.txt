@@ -1,0 +1,8 @@
+streamlit>=1.39
+pandas==2.3.3
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+plotly>=5.0
+evidently>=0.5,<0.7
+huggingface_hub>=0.20
+pyarrow>=15
