@@ -62,7 +62,7 @@ with st.sidebar:
 
 
 tab_ops, tab_drift, tab_business, tab_advanced = st.tabs(
-    ["⚙️ Opérationnel", "🌊 Data Drift", "💼 Business", "🧠 Indicateurs avancés"]
+    ["⚙️ Opérationnel", "🌊 Data Drift Report", "💼 Business", "🧠 Data Drift avancé"]
 )
 
 # Fetched once and reused across the Operational and Business tabs. The
