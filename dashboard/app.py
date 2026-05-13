@@ -91,6 +91,15 @@ with tab_ops:
         st.warning(f"Aucune prédiction enregistrée sur les {hours} dernières heures.")
         st.stop()
 
+    # Headline: total server-side wall-clock = handler + DB log. The detail
+    # decomposition lives in the dedicated section below.
+    _total_p50_top = int(round(float(summary["p50"] or 0))) + int(
+        round(float(summary["db_log_p50"] or 0))
+    )
+    _total_p95_top = int(round(float(summary["p95"] or 0))) + int(
+        round(float(summary["db_log_p95"] or 0))
+    )
+
     cols = st.columns(6)
     cols[0].metric("Total requêtes", f"{summary['total']:,}")
     cols[1].metric(
@@ -100,14 +109,14 @@ with tab_ops:
         delta_color="inverse",
     )
     cols[2].metric(
-        "Handler p50",
-        f"{int(summary['p50'] or 0)} ms",
-        help="`latency_ms` = handler FastAPI seul. Voir la section *Décomposition* plus bas pour le wall-clock complet (handler + DB log).",
+        "Total p50",
+        f"{_total_p50_top} ms",
+        help="Wall-clock serveur complet = handler (`latency_ms`) + DB log (`db_log_ms`). Détail dans la section *Décomposition* plus bas.",
     )
     cols[3].metric(
-        "Handler p95",
-        f"{int(summary['p95'] or 0)} ms",
-        help="`latency_ms` p95.",
+        "Total p95",
+        f"{_total_p95_top} ms",
+        help="Wall-clock serveur p95 = handler p95 + DB log p95.",
     )
     cols[4].metric(
         "% REFUSED",
@@ -169,33 +178,38 @@ with tab_ops:
         "entrée dans le `finally`) — typiquement < 1 ms."
     )
 
-    cols_perf = st.columns(6)
+    cols_perf = st.columns(7)
     cols_perf[0].metric(
+        "Total p50 / p95",
+        f"{total_p50} / {total_p95} ms",
+        help="Wall-clock serveur complet = `latency_ms` (handler) + `db_log_ms` (INSERT). C'est le temps réel passé côté serveur sur une requête.",
+    )
+    cols_perf[1].metric(
         "Handler p50 / p95",
         f"{handler_p50} / {handler_p95} ms",
         help="`latency_ms` = assembly + inference + plumbing. **N'inclut pas** le DB log.",
     )
-    cols_perf[1].metric(
+    cols_perf[2].metric(
         "Feature assembly p50 / p95",
         f"{asm_p50} / {asm_p95} ms",
         help="Lookup feature store + transforms + ratios + reindex.",
     )
-    cols_perf[2].metric(
+    cols_perf[3].metric(
         "Inference wall p50 / p95",
         f"{inf_p50} / {inf_p95} ms",
         help="`model.predict_proba` (wall-clock).",
     )
-    cols_perf[3].metric(
+    cols_perf[4].metric(
         "Inference CPU p50 / p95",
         f"{inf_cpu_p50} / {inf_cpu_p95} ms",
         help="CPU time consommé pendant l'inférence (peut lire 0 sur paths très rapides — résolution de `time.process_time`).",
     )
-    cols_perf[4].metric(
+    cols_perf[5].metric(
         "DB log p50 / p95",
         f"{db_log_p50} / {db_log_p95} ms",
         help="INSERT Supabase mesuré autour de `conn.execute(insert(...))` dans `api/logger.py`. Domine généralement l'overhead total.",
     )
-    cols_perf[5].metric(
+    cols_perf[6].metric(
         "Plumbing Δ p50 / p95",
         f"{plumb_p50} / {plumb_p95} ms",
         help="`latency_ms - feature_assembly_ms - inference_ms`. Résidu Python entre les sous-mesures (typiquement < 1 ms).",
