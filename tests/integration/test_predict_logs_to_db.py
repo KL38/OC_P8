@@ -77,7 +77,8 @@ def test_predict_inserts_row(client, valid_payload, test_engine):
         with test_engine.connect() as conn:
             row = conn.execute(
                 text(
-                    f"SELECT decision, probability_default, status_code, features "
+                    f"SELECT decision, probability_default, status_code, features, "
+                    f"feature_assembly_ms, inference_ms, inference_cpu_ms "
                     f"FROM {TEST_TABLE} WHERE sk_id_curr = :sk_id"
                 ),
                 {"sk_id": sk_id},
@@ -86,6 +87,14 @@ def test_predict_inserts_row(client, valid_payload, test_engine):
         assert row.decision in ("GRANTED", "REFUSED")
         assert 0.0 <= row.probability_default <= 1.0
         assert isinstance(row.features, dict) and len(row.features) > 0
+        # Fine-grained timings populated on the success path. Loose bounds —
+        # we only assert positivity and a sane upper bound (10 s would already
+        # be a major regression on a single-row predict).
+        assert row.feature_assembly_ms is not None and 0.0 < row.feature_assembly_ms < 10_000.0
+        assert row.inference_ms is not None and 0.0 < row.inference_ms < 10_000.0
+        # CPU time can read as 0 on very fast paths (process_time resolution
+        # is platform-dependent); only assert non-negative.
+        assert row.inference_cpu_ms is not None and row.inference_cpu_ms >= 0.0
     finally:
         with test_engine.begin() as conn:
             conn.execute(

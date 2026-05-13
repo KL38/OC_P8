@@ -36,6 +36,9 @@ def test_table_contains_expected_columns() -> None:
         "sk_id_curr",
         "client_known",
         "latency_ms",
+        "feature_assembly_ms",
+        "inference_ms",
+        "inference_cpu_ms",
         "status_code",
         "error_message",
         "raw_input",
@@ -63,3 +66,7 @@ def test_required_columns_are_not_null() -> None:
     # Ground truth and top_shap are post-hoc data.
     assert cols["ground_truth"].nullable is True
     assert cols["top_shap"].nullable is True
+    # Fine-grained timings (étape 4) are nullable — error rows leave them NULL.
+    assert cols["feature_assembly_ms"].nullable is True
+    assert cols["inference_ms"].nullable is True
+    assert cols["inference_cpu_ms"].nullable is True
