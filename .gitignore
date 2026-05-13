@@ -71,9 +71,11 @@ data/reference_dataset.parquet
 data/application_train.csv
 data/*.csv
 
-# Generated Evidently HTML — produced by scripts/generate_drift_report.py.
-# Committed only when preparing a HF Space deploy.
+# Generated Evidently HTML + JSON snapshot — produced by
+# scripts/generate_drift_report.py. Big (~40 MB HTML); shipped to the
+# monitoring Space via huggingface_hub upload_folder, never via git.
 dashboard/static/drift_report.html
+dashboard/static/drift_report.json
 
 # The metadata JSONs (feature_names, app_train_columns, app_train_categories,
 # app_train_binary_mappings, no_history_template) are intentionally COMMITTED:
@@ -88,3 +90,6 @@ tmp/
 
 # enlever claude au cas ou on ait des secrets dedans
 .claude/
+
+
+livrables/
