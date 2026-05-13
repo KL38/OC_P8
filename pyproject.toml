@@ -31,8 +31,10 @@ dependencies = [
 dev = [
     "evidently>=0.7",
     "httpx>=0.28.1",
+    "line-profiler>=5.0.2",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.12",
+    "snakeviz>=2.2.2",
     "streamlit>=1.57.0",
 ]

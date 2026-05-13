@@ -88,6 +88,11 @@ logs/
 scratch/
 tmp/
 
+# cProfile / line_profiler outputs (étape 4) — regenerable via
+# scripts/profile_predict.py and scripts/profile_transform_lines.py
+profiling/
+*.prof
+
 # enlever claude au cas ou on ait des secrets dedans
 .claude/
 
