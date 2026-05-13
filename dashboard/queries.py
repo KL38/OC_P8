@@ -67,7 +67,13 @@ def fetch_recent(days: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_summary(days: int) -> dict:
-    """Aggregate KPIs computed in SQL to keep the dashboard responsive."""
+    """Aggregate KPIs computed in SQL to keep the dashboard responsive.
+
+    Returns p50/p95 of total ``latency_ms`` plus the étape-4 breakdown
+    (``feature_assembly_ms``, ``inference_ms``, ``inference_cpu_ms``). The
+    breakdown columns are NULL on legacy rows logged before the
+    instrumentation was added — PERCENTILE_CONT ignores NULLs natively.
+    """
     since = datetime.now(tz=timezone.utc) - timedelta(days=days)
     sql = text(
         f"""
@@ -80,6 +86,12 @@ def fetch_summary(days: int) -> dict:
             SUM(CASE WHEN client_known = false THEN 1 ELSE 0 END)   AS unknowns,
             PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY latency_ms) AS p50,
             PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY feature_assembly_ms) AS asm_p50,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY feature_assembly_ms) AS asm_p95,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY inference_ms)        AS inf_p50,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY inference_ms)        AS inf_p95,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY inference_cpu_ms)    AS inf_cpu_p50,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY inference_cpu_ms)    AS inf_cpu_p95,
             AVG(probability_default)                                AS avg_proba
         FROM {PROD_TABLE}
         WHERE timestamp >= :since
@@ -102,6 +114,32 @@ def fetch_volume_by_hour(days: int) -> pd.DataFrame:
                PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95
         FROM {PROD_TABLE}
         WHERE timestamp >= :since
+        GROUP BY 1
+        ORDER BY 1
+        """
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(sql, conn, params={"since": since})
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_latency_breakdown(days: int) -> pd.DataFrame:
+    """Hourly p50 of each timing component (étape 4).
+
+    Returns columns: hour, total_p50, feature_assembly_p50, inference_p50,
+    inference_cpu_p50. NULL columns from legacy rows are skipped by
+    PERCENTILE_CONT, so hours predating the instrumentation surface as NaN.
+    """
+    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+    sql = text(
+        f"""
+        SELECT date_trunc('hour', timestamp) AS hour,
+               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms)          AS total_p50,
+               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY feature_assembly_ms) AS feature_assembly_p50,
+               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inference_ms)        AS inference_p50,
+               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inference_cpu_ms)    AS inference_cpu_p50
+        FROM {PROD_TABLE}
+        WHERE timestamp >= :since AND status_code = 200
         GROUP BY 1
         ORDER BY 1
         """

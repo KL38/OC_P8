@@ -21,6 +21,7 @@ import streamlit as st
 from scipy import stats as scipy_stats
 
 from queries import (
+    fetch_latency_breakdown,
     fetch_proba_distribution,
     fetch_recent,
     fetch_summary,
@@ -109,6 +110,66 @@ with tab_ops:
                 title="Latence (ms)",
             )
             st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Décomposition de la latence")
+    st.caption(
+        "Le `latency_ms` total est mesuré en bout-en-bout (handler FastAPI). "
+        "`feature_assembly_ms` couvre lookup feature store + transforms + ratios + reindex. "
+        "`inference_ms` est le wall-clock de `model.predict_proba`. "
+        "`inference_cpu_ms` est le CPU time consommé pendant l'inférence (peut être 0 sur paths très rapides). "
+        "Le delta `latency_ms - assembly - inference` mesure l'overhead restant (DB log, sérialisation, parsing)."
+    )
+    cols_perf = st.columns(4)
+    cols_perf[0].metric(
+        "Total p50 / p95",
+        f"{int(summary['p50'] or 0)} / {int(summary['p95'] or 0)} ms",
+    )
+    cols_perf[1].metric(
+        "Feature assembly p50 / p95",
+        f"{(summary['asm_p50'] or 0):.1f} / {(summary['asm_p95'] or 0):.1f} ms",
+    )
+    cols_perf[2].metric(
+        "Inference wall p50 / p95",
+        f"{(summary['inf_p50'] or 0):.2f} / {(summary['inf_p95'] or 0):.2f} ms",
+    )
+    cols_perf[3].metric(
+        "Inference CPU p50 / p95",
+        f"{(summary['inf_cpu_p50'] or 0):.2f} / {(summary['inf_cpu_p95'] or 0):.2f} ms",
+    )
+
+    breakdown = fetch_latency_breakdown(days)
+    if not breakdown.empty:
+        breakdown = breakdown.copy()
+        breakdown["overhead_p50"] = (
+            breakdown["total_p50"].fillna(0)
+            - breakdown["feature_assembly_p50"].fillna(0)
+            - breakdown["inference_p50"].fillna(0)
+        ).clip(lower=0)
+        long_df = breakdown.melt(
+            id_vars="hour",
+            value_vars=["feature_assembly_p50", "inference_p50", "overhead_p50"],
+            var_name="composant",
+            value_name="ms",
+        )
+        long_df["composant"] = long_df["composant"].map({
+            "feature_assembly_p50": "Feature assembly",
+            "inference_p50": "Model inference",
+            "overhead_p50": "Overhead (DB log + sérialisation)",
+        })
+        fig_breakdown = px.area(
+            long_df,
+            x="hour",
+            y="ms",
+            color="composant",
+            title="Décomposition p50 par heure (stacked)",
+        )
+        fig_breakdown.update_layout(yaxis_title="latence p50 (ms)")
+        st.plotly_chart(fig_breakdown, use_container_width=True)
+    else:
+        st.info(
+            "Pas encore de données instrumentées sur la fenêtre. "
+            "Lance du trafic via `scripts/seed_traffic.py` après le deploy de l'API étape 4."
+        )
 
     st.subheader("Distribution des probabilités")
     recent = fetch_recent(days)

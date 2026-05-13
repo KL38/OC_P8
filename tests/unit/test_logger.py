@@ -67,6 +67,9 @@ def test_insert_payload_contains_expected_fields(monkeypatch) -> None:
 
     _call(
         features=pd.DataFrame([{"EXT_SOURCE_1": 0.42, "FOO": np.nan, "BAR": np.inf}]),
+        feature_assembly_ms=12.5,
+        inference_ms=3.2,
+        inference_cpu_ms=2.9,
     )
 
     values = captured["values"]
@@ -78,6 +81,10 @@ def test_insert_payload_contains_expected_fields(monkeypatch) -> None:
     # NaN/Inf scrubbed to None for JSONB compatibility
     assert values["features"]["FOO"] is None
     assert values["features"]["BAR"] is None
+    # Fine-grained timings propagated through to the insert payload.
+    assert values["feature_assembly_ms"] == pytest.approx(12.5)
+    assert values["inference_ms"] == pytest.approx(3.2)
+    assert values["inference_cpu_ms"] == pytest.approx(2.9)
 
 
 def test_db_failure_is_swallowed(monkeypatch, caplog) -> None:
@@ -126,3 +133,7 @@ def test_error_path_logs_status_and_message(monkeypatch) -> None:
     assert values["error_message"] == "boom"
     assert values["decision"] == "ERROR"
     assert values["features"] == {}
+    # Error rows leave timing breakdown NULL (defaults to None when omitted).
+    assert values["feature_assembly_ms"] is None
+    assert values["inference_ms"] is None
+    assert values["inference_cpu_ms"] is None

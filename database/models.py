@@ -62,6 +62,12 @@ def build_predictions_log_table(name: str, metadata: MetaData) -> Table:
         Column("client_known", Boolean, nullable=False),
         # Operational metrics
         Column("latency_ms", Integer, nullable=False),
+        # Fine-grained timings added in étape 4. Nullable so legacy rows
+        # (pre-instrumentation) remain valid. Populated only on the success
+        # path — error rows leave them NULL.
+        Column("feature_assembly_ms", Float, nullable=True),
+        Column("inference_ms", Float, nullable=True),
+        Column("inference_cpu_ms", Float, nullable=True),
         Column("status_code", Integer, nullable=False, server_default="200"),
         Column("error_message", Text, nullable=True),
         # Payloads

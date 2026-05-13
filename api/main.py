@@ -158,10 +158,23 @@ async def predict(payload: PredictionRequest, request: Request) -> PredictionRes
     decision: str | None = None
     status_code = status.HTTP_200_OK
     error_message: str | None = None
+    # Fine-grained timings (étape 4). Left as None when the corresponding
+    # sub-step did not complete (e.g. assembly raised before inference ran).
+    feature_assembly_ms: float | None = None
+    inference_ms: float | None = None
+    inference_cpu_ms: float | None = None
 
     try:
+        t_asm = time.perf_counter()
         features, client_known = assemble(raw_inputs, sk_id_curr=sk_id, artefacts=artefacts)
+        feature_assembly_ms = (time.perf_counter() - t_asm) * 1000.0
+
+        t_inf_wall = time.perf_counter()
+        t_inf_cpu = time.process_time()
         proba, decision = predictor.predict(features)
+        inference_ms = (time.perf_counter() - t_inf_wall) * 1000.0
+        inference_cpu_ms = (time.process_time() - t_inf_cpu) * 1000.0
+
         return PredictionResponse(
             sk_id_curr=sk_id,
             probability_default=proba,
@@ -193,6 +206,9 @@ async def predict(payload: PredictionRequest, request: Request) -> PredictionRes
             threshold=predictor.threshold,
             model_version=predictor.model_version,
             latency_ms=int((time.perf_counter() - started) * 1000),
+            feature_assembly_ms=feature_assembly_ms,
+            inference_ms=inference_ms,
+            inference_cpu_ms=inference_cpu_ms,
             status_code=status_code,
             error_message=error_message,
         )
