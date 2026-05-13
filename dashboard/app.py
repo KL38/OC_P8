@@ -1,9 +1,10 @@
 """Credit Scoring Monitoring Dashboard.
 
-Three tabs:
+Four tabs:
 - Operational: volume, latency p50/p95, error rate, score distribution
 - Drift: embedded Evidently HTML + summary
 - Business: GRANTED vs REFUSED, top-driver features
+- Advanced: output drift, critical features, weighted drift score
 
 Reads from Supabase (predictions_log) — never touches the test table.
 """
@@ -12,11 +13,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
+from scipy import stats as scipy_stats
 
-from queries import fetch_recent, fetch_summary, fetch_volume_by_hour
+from queries import (
+    fetch_proba_distribution,
+    fetch_recent,
+    fetch_summary,
+    fetch_volume_by_hour,
+    load_drift_report_json,
+    load_feature_importance,
+    load_proba_reference,
+    parse_drift_results,
+)
 
 DRIFT_REPORT_PATH = Path(__file__).parent / "static" / "drift_report.html"
 
@@ -41,8 +54,8 @@ with st.sidebar:
     )
 
 
-tab_ops, tab_drift, tab_business = st.tabs(
-    ["⚙️ Opérationnel", "🌊 Data Drift", "💼 Business"]
+tab_ops, tab_drift, tab_business, tab_advanced = st.tabs(
+    ["⚙️ Opérationnel", "🌊 Data Drift", "💼 Business", "🧠 Indicateurs avancés"]
 )
 
 
@@ -58,7 +71,7 @@ with tab_ops:
         st.warning(f"Aucune prédiction enregistrée sur les {days} derniers jours.")
         st.stop()
 
-    cols = st.columns(5)
+    cols = st.columns(6)
     cols[0].metric("Total requêtes", f"{summary['total']:,}")
     cols[1].metric(
         "Erreurs",
@@ -71,6 +84,11 @@ with tab_ops:
     cols[4].metric(
         "% REFUSED",
         f"{(summary['refused'] / max(summary['total'], 1)) * 100:.1f} %",
+    )
+    cols[5].metric(
+        "% Nouveaux clients",
+        f"{(summary['unknowns'] / max(summary['total'], 1)) * 100:.1f} %",
+        help="Part de clients sans entrée dans le feature store (no_history_template).",
     )
 
     st.subheader("Volume & latence par heure")
@@ -156,4 +174,189 @@ with tab_business:
                 "decision", "latency_ms", "model_version"]].head(50),
             use_container_width=True,
             hide_index=True,
+        )
+
+
+# --------------------------------------------------------- Advanced KPIs --
+with tab_advanced:
+    st.caption(
+        "Indicateurs avancés au-delà du drift par feature : drift de la sortie "
+        "modèle, suivi des features critiques, et score de drift pondéré par "
+        "importance SHAP."
+    )
+
+    proba_ref = load_proba_reference()
+    importance = load_feature_importance()
+    drift_json = load_drift_report_json()
+    drift_results = parse_drift_results(drift_json)
+
+    # ---------------------------------------------------- Output drift --
+    st.subheader("1. Output drift — distribution de probability_default")
+    if proba_ref is None:
+        st.info(
+            "`dashboard/static/proba_reference.json` introuvable. "
+            "Génère-le avec `uv run python scripts/build_monitoring_artefacts.py`."
+        )
+    else:
+        try:
+            current_proba = fetch_proba_distribution(limit=500)
+        except Exception as exc:
+            st.error(f"Impossible de récupérer les probas prod : {exc}")
+            current_proba = []
+
+        if not current_proba:
+            st.warning("Pas de prédiction logguée pour calculer la distribution prod.")
+        else:
+            ref_values = np.array(proba_ref.get("values", []))
+            cur_values = np.array(current_proba)
+
+            # K-S test on raw samples — robust comparison of distributions.
+            # scipy returns a KstestResult NamedTuple (statistic, pvalue); the
+            # type stubs are weak, hence the ignore comment.
+            ks_result = scipy_stats.ks_2samp(ref_values, cur_values)
+            ks_p = float(ks_result.pvalue)  # type: ignore[attr-defined]
+            detected = ks_p < 0.05
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Reference mean", f"{ref_values.mean():.3f}")
+            c2.metric(
+                "Current mean",
+                f"{cur_values.mean():.3f}",
+                delta=f"{(cur_values.mean() - ref_values.mean()):+.3f}",
+            )
+            c3.metric("K-S p-value", f"{ks_p:.2e}")
+            c4.metric(
+                "Output drift",
+                "✓ détecté" if detected else "✗ stable",
+                delta_color="inverse" if detected else "normal",
+            )
+
+            # Overlay histogram.
+            fig = go.Figure()
+            fig.add_trace(
+                go.Histogram(
+                    x=ref_values, name="Reference (training)",
+                    opacity=0.55, nbinsx=40, histnorm="probability",
+                    marker_color="#888",
+                )
+            )
+            fig.add_trace(
+                go.Histogram(
+                    x=cur_values, name=f"Current (last {len(cur_values)})",
+                    opacity=0.7, nbinsx=40, histnorm="probability",
+                    marker_color="#e74c3c",
+                )
+            )
+            fig.update_layout(
+                barmode="overlay",
+                xaxis_title="probability_default",
+                yaxis_title="density",
+                title="Distribution de la proba de défaut — reference vs current",
+                height=350,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.caption(
+                "Le K-S test compare les deux échantillons sur leur forme de "
+                "distribution. Un drift de la sortie modèle est l'indicateur le "
+                "plus direct d'un comportement modèle altéré en prod — il "
+                "agrège l'effet de tous les drifts d'inputs simultanément."
+            )
+
+    # ------------------------------------------------- Critical features --
+    st.subheader("2. Features critiques (top 10 SHAP)")
+    if importance is None:
+        st.info(
+            "`dashboard/static/feature_importance.json` introuvable. "
+            "Génère-le avec `uv run python scripts/build_monitoring_artefacts.py`."
+        )
+    elif not drift_results:
+        st.info(
+            "`dashboard/static/drift_report.json` introuvable. "
+            "Régénère le drift report avec `uv run python scripts/generate_drift_report.py`."
+        )
+    else:
+        top_n = 10
+        rows = []
+        for entry in importance["top"][:top_n]:
+            feat = entry["feature"]
+            imp = entry["importance"]
+            result = drift_results.get(feat, {})
+            detected = result.get("detected")
+            score = result.get("score")
+            stattest = result.get("stattest") or "—"
+            rows.append({
+                "Rank": entry["rank"],
+                "Feature": feat,
+                "SHAP importance": round(imp, 4),
+                "Drift": "🔴 Détecté" if detected else ("🟢 Stable" if detected is False else "—"),
+                "Drift score": (f"{score:.4f}" if score is not None else "—"),
+                "Stat test": stattest,
+            })
+        df_critical = pd.DataFrame(rows)
+
+        n_drifted = sum(1 for r in rows if "Détecté" in r["Drift"])
+        c1, c2 = st.columns([1, 3])
+        c1.metric(
+            f"Drifted parmi top {top_n}",
+            f"{n_drifted}/{top_n}",
+            delta_color="inverse",
+        )
+        c2.caption(
+            f"Méthode : {importance['method']} sur {importance['sample_size']} "
+            "lignes de reference. Le nombre de features critiques qui ont drifté "
+            "est l'indicateur le plus actionnable — un drift sur un top-feature "
+            "demande un retraining prioritaire."
+        )
+
+        st.dataframe(df_critical, use_container_width=True, hide_index=True)
+
+    # -------------------------------------------------- Weighted drift --
+    st.subheader("3. Score de drift pondéré par importance")
+    if importance is None or not drift_results:
+        st.info(
+            "Indicateur indisponible tant que `feature_importance.json` et "
+            "`drift_report.json` ne sont pas tous les deux présents."
+        )
+    else:
+        total_importance = 0.0
+        drifted_importance = 0.0
+        n_features_seen = 0
+        for entry in importance["top"]:
+            feat = entry["feature"]
+            imp = float(entry["importance"])
+            total_importance += imp
+            result = drift_results.get(feat)
+            if result is None:
+                continue
+            n_features_seen += 1
+            if result.get("detected"):
+                drifted_importance += imp
+
+        weighted_ratio = (drifted_importance / total_importance) if total_importance > 0 else 0.0
+        threshold = 0.30
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric(
+            "Drift pondéré",
+            f"{weighted_ratio:.1%}",
+            delta=f"seuil {threshold:.0%}",
+            delta_color="inverse" if weighted_ratio >= threshold else "normal",
+        )
+        c2.metric(
+            "Importance couverte",
+            f"{n_features_seen} / {len(importance['top'])} features",
+        )
+        c3.metric(
+            "Verdict",
+            "🔴 Alerte" if weighted_ratio >= threshold else "🟢 OK",
+        )
+
+        st.caption(
+            "**Formule** : Σ(importance × drift_detected) / Σ(importance) sur les "
+            f"top-{len(importance['top'])} features SHAP. Pondère le verdict "
+            "binaire d'Evidently par l'impact réel de chaque feature sur le "
+            "modèle. Seuil : 30% de l'importance totale qui drift → alerte. "
+            "Indicateur plus fin que le ratio brut affiché par Evidently dans "
+            "l'onglet Data Drift."
         )

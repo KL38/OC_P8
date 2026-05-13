@@ -2,12 +2,18 @@
 
 Reads:
 - Reference: ``data/reference_dataset.parquet`` (training sample, frozen)
-- Current: last N days of production predictions from Supabase
+- Current: last N production predictions from Supabase, ordered by most
+  recent (ignores history beyond that window)
+
+The "last N" approach makes the pipeline replayable: re-run seed_traffic
+and re-run this script — the report reflects the most recent batch
+without needing to truncate the DB.
 
 Writes an HTML report consumable by the Streamlit dashboard.
 
 Usage:
-    uv run python scripts/generate_drift_report.py --days 30
+    uv run python scripts/generate_drift_report.py                  # last 100
+    uv run python scripts/generate_drift_report.py --limit 500
     uv run python scripts/generate_drift_report.py --output dashboard/static/drift_report.html
 """
 
@@ -17,7 +23,7 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -43,50 +49,75 @@ def _load_reference(path: Path, feature_names: list[str]) -> pd.DataFrame:
     return df[keep].copy()
 
 
-def _load_current(database_url: str, days: int, feature_names: list[str]) -> pd.DataFrame:
-    """Pull JSONB features back into a wide DataFrame for Evidently."""
-    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+def _load_current(database_url: str, limit: int, feature_names: list[str]) -> pd.DataFrame:
+    """Pull the last ``limit`` successful predictions, ordered by most recent.
+
+    Returns the JSONB feature payloads expanded into a wide DataFrame for
+    Evidently. Newer rows come first in SQL, but order does not matter for
+    drift (the test is distribution-based, not temporal).
+    """
     engine = create_engine(database_url, future=True)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
                 "SELECT features FROM predictions_log "
-                "WHERE timestamp >= :since AND status_code = 200"
+                "WHERE status_code = 200 "
+                "ORDER BY timestamp DESC "
+                "LIMIT :lim"
             ),
-            {"since": since},
+            {"lim": limit},
         ).all()
     if not rows:
         raise SystemExit(
-            f"No prediction rows in the last {days} days — generate some traffic first."
+            "No successful prediction rows in predictions_log — generate some "
+            "traffic first (scripts/seed_traffic.py)."
         )
     flat = pd.json_normalize([r.features for r in rows])
     keep = [c for c in feature_names if c in flat.columns]
-    logger.info("Loaded %d production rows, %d features available", len(flat), len(keep))
+    logger.info(
+        "Loaded %d production rows (last %d requested), %d features available",
+        len(flat), limit, len(keep),
+    )
     return flat[keep].copy()
 
 
 def _build_report(reference: pd.DataFrame, current: pd.DataFrame):
-    """Import Evidently lazily so the script still works when only inspecting."""
+    """Import Evidently lazily so the script still works when only inspecting.
+
+    Returns the evaluation object produced by ``Report.run``. The 0.7+ API
+    no longer mutates ``report`` in place — ``.run()`` returns a separate
+    snapshot that carries ``save_html``.
+    """
     try:
-        # Evidently >= 0.5 stable API.
-        from evidently.metric_preset import DataDriftPreset
-        from evidently.report import Report
+        from evidently import Report
+        from evidently.presets import DataDriftPreset
     except ImportError as exc:
         raise SystemExit(
             "evidently not installed. Add it to dashboard/requirements.txt "
-            "or `uv pip install 'evidently>=0.5,<0.7'`."
+            "or `uv add --group dev 'evidently>=0.7'`."
         ) from exc
 
-    report = Report(metrics=[DataDriftPreset()])
-    report.run(reference_data=reference, current_data=current)
-    return report
+    report = Report([DataDriftPreset()])
+    # Evidently emits dozens of "divide by zero" RuntimeWarnings from scipy
+    # when statistical tests run on near-constant columns. These are benign
+    # (the resulting NaN/inf is interpreted as "skip this feature" downstream)
+    # and they drown out real log output. Silence them only inside this call.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        return report.run(reference, current)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--days", type=int, default=30)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Compare against the last N successful predictions (default %(default)s).",
+    )
     parser.add_argument("--feature-names", type=Path, default=DEFAULT_FEATURE_NAMES)
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL"))
     args = parser.parse_args()
@@ -105,18 +136,47 @@ def main() -> None:
 
     feature_names = json.loads(args.feature_names.read_text())
     reference = _load_reference(args.reference, feature_names)
-    current = _load_current(args.database_url, args.days, feature_names)
+    current = _load_current(args.database_url, args.limit, feature_names)
 
     # Align columns: drop any column not in BOTH frames (Evidently expects parity)
     common = [c for c in reference.columns if c in current.columns]
     reference = reference[common]
     current = current[common]
-    logger.info("Comparing on %d common features", len(common))
+    logger.info("Aligned on %d common features", len(common))
 
-    report = _build_report(reference, current)
+    # Evidently rejects all-NaN columns ("empty column ... was provided for drift
+    # calculation"). Drop any column that is fully null on either side.
+    empty_ref = {c for c in reference.columns if reference[c].isna().all()}
+    empty_cur = {c for c in current.columns if current[c].isna().all()}
+    empty = empty_ref | empty_cur
+    if empty:
+        sample = ", ".join(sorted(empty)[:5])
+        logger.warning(
+            "Dropping %d all-NaN column(s) (empty in ref=%d, in current=%d). Sample: %s%s",
+            len(empty), len(empty_ref), len(empty_cur), sample,
+            " ..." if len(empty) > 5 else "",
+        )
+        reference = reference.drop(columns=list(empty))
+        current = current.drop(columns=list(empty))
+    logger.info("Comparing on %d features after NaN filter", len(reference.columns))
+
+    evaluation = _build_report(reference, current)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    report.save_html(str(args.output))
+    evaluation.save_html(str(args.output))
     logger.info("Saved drift report to %s", args.output)
+
+    # Also dump a JSON snapshot of the run so the dashboard can parse
+    # per-feature drift scores without scraping the HTML.
+    json_path = args.output.with_suffix(".json")
+    try:
+        json_payload = evaluation.json()
+        if not isinstance(json_payload, str):
+            import json as _json
+            json_payload = _json.dumps(json_payload)
+        json_path.write_text(json_payload, encoding="utf-8")
+        logger.info("Saved drift report JSON to %s", json_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not save JSON snapshot of the drift report: %s", exc)
 
 
 if __name__ == "__main__":

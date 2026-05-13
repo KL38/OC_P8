@@ -1,0 +1,106 @@
+{
+  "method": "SHAP mean(|value|)",
+  "sample_size": 1000,
+  "top": [
+    {
+      "feature": "EXT_SOURCE_2",
+      "importance": 0.3318300311081167,
+      "rank": 1
+    },
+    {
+      "feature": "EXT_SOURCE_3",
+      "importance": 0.2926431503200785,
+      "rank": 2
+    },
+    {
+      "feature": "EXT_SOURCE_1",
+      "importance": 0.15132982382726168,
+      "rank": 3
+    },
+    {
+      "feature": "CODE_GENDER",
+      "importance": 0.1252679769235579,
+      "rank": 4
+    },
+    {
+      "feature": "AMT_ANNUITY",
+      "importance": 0.10832594389992715,
+      "rank": 5
+    },
+    {
+      "feature": "PAYMENT_RATE",
+      "importance": 0.10655882058791777,
+      "rank": 6
+    },
+    {
+      "feature": "DAYS_EMPLOYED",
+      "importance": 0.0922684808943442,
+      "rank": 7
+    },
+    {
+      "feature": "AMT_GOODS_PRICE",
+      "importance": 0.08375470921676388,
+      "rank": 8
+    },
+    {
+      "feature": "APPROVED_CNT_PAYMENT_MEAN",
+      "importance": 0.0826417944697696,
+      "rank": 9
+    },
+    {
+      "feature": "OWN_CAR_AGE",
+      "importance": 0.0783697288258794,
+      "rank": 10
+    },
+    {
+      "feature": "INSTAL_DPD_MEAN",
+      "importance": 0.07556938243761617,
+      "rank": 11
+    },
+    {
+      "feature": "DAYS_BIRTH",
+      "importance": 0.06739450695866071,
+      "rank": 12
+    },
+    {
+      "feature": "NAME_EDUCATION_TYPE_Higher education",
+      "importance": 0.062496324090183804,
+      "rank": 13
+    },
+    {
+      "feature": "NAME_FAMILY_STATUS_Married",
+      "importance": 0.05970839416398508,
+      "rank": 14
+    },
+    {
+      "feature": "AMT_CREDIT",
+      "importance": 0.05818738526490425,
+      "rank": 15
+    },
+    {
+      "feature": "PREV_CNT_PAYMENT_MEAN",
+      "importance": 0.05125354164408299,
+      "rank": 16
+    },
+    {
+      "feature": "INSTAL_AMT_PAYMENT_SUM",
+      "importance": 0.04222843618474994,
+      "rank": 17
+    },
+    {
+      "feature": "DAYS_ID_PUBLISH",
+      "importance": 0.03842256463192754,
+      "rank": 18
+    },
+    {
+      "feature": "ANNUITY_INCOME_PERC",
+      "importance": 0.034090979669589294,
+      "rank": 19
+    },
+    {
+      "feature": "BURO_AMT_CREDIT_SUM_DEBT_MEAN",
+      "importance": 0.03253432163415815,
+      "rank": 20
+    }
+  ]
+}

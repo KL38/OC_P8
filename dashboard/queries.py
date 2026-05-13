@@ -1,29 +1,47 @@
-"""Supabase read-only helpers for the monitoring dashboard.
+"""Supabase read-only helpers + static monitoring artefacts loaders.
 
-All queries hit the ``predictions_log`` table (production data) and never
-touch ``predictions_log_test``. Connection is cached by Streamlit so we
-don't reopen a pool on every interaction.
+DB queries hit ``predictions_log`` (production data) and never touch the
+test table. Static artefacts (proba_reference, feature_importance,
+drift_report JSON snapshot) live under ``dashboard/static/`` and are
+loaded once per session.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 from sqlalchemy import Engine, create_engine, text
 
 PROD_TABLE = "predictions_log"
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @st.cache_resource(show_spinner=False)
 def get_engine() -> Engine:
     url = os.getenv("DATABASE_URL")
     if not url:
+        # Local dev convenience: try the repo's database/.env file. Silent
+        # no-op on the HF Space where python-dotenv may not be installed and
+        # the URL is configured via Space secrets.
+        try:
+            from dotenv import load_dotenv
+
+            env_path = Path(__file__).resolve().parents[1] / "database" / ".env"
+            if env_path.exists():
+                load_dotenv(env_path)
+                url = os.getenv("DATABASE_URL")
+        except ImportError:
+            pass
+    if not url:
         raise RuntimeError(
             "DATABASE_URL is not set. Configure it as a Space secret "
-            "(read-only role recommended)."
+            "(read-only role recommended) or in database/.env for local dev."
         )
     return create_engine(url, pool_size=2, max_overflow=2, pool_pre_ping=True, future=True)
 
@@ -59,6 +77,7 @@ def fetch_summary(days: int) -> dict:
             SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END)     AS errors,
             SUM(CASE WHEN decision = 'GRANTED' THEN 1 ELSE 0 END)   AS granted,
             SUM(CASE WHEN decision = 'REFUSED' THEN 1 ELSE 0 END)   AS refused,
+            SUM(CASE WHEN client_known = false THEN 1 ELSE 0 END)   AS unknowns,
             PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY latency_ms) AS p50,
             PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95,
             AVG(probability_default)                                AS avg_proba
@@ -89,3 +108,130 @@ def fetch_volume_by_hour(days: int) -> pd.DataFrame:
     )
     with get_engine().connect() as conn:
         return pd.read_sql(sql, conn, params={"since": since})
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_proba_distribution(limit: int) -> list[float]:
+    """Return the last ``limit`` successful prediction probabilities (most recent first)."""
+    sql = text(
+        f"""
+        SELECT probability_default FROM {PROD_TABLE}
+        WHERE status_code = 200 AND probability_default IS NOT NULL
+        ORDER BY timestamp DESC
+        LIMIT :lim
+        """
+    )
+    with get_engine().connect() as conn:
+        rows = conn.execute(sql, {"lim": limit}).all()
+    return [float(r.probability_default) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Static artefacts (built offline by scripts/build_monitoring_artefacts.py
+# and scripts/generate_drift_report.py). Cached for the lifetime of the
+# Streamlit process — refresh by restarting the Space.
+# ---------------------------------------------------------------------------
+
+
+def _load_json(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@st.cache_resource(show_spinner=False)
+def load_proba_reference() -> dict | None:
+    """Histogram + raw samples of training-time probability_default."""
+    return _load_json(STATIC_DIR / "proba_reference.json")
+
+
+@st.cache_resource(show_spinner=False)
+def load_feature_importance() -> dict | None:
+    """Top-K features by SHAP mean(|value|) on the reference dataset."""
+    return _load_json(STATIC_DIR / "feature_importance.json")
+
+
+@st.cache_resource(show_spinner=False)
+def load_drift_report_json() -> dict | None:
+    """JSON snapshot saved alongside the HTML by generate_drift_report.py."""
+    return _load_json(STATIC_DIR / "drift_report.json")
+
+
+def parse_drift_results(report_json: dict | None) -> dict[str, dict[str, Any]]:
+    """Parse the Evidently 0.7+ JSON snapshot.
+
+    Schema observed in 0.7.x::
+
+        {
+          "metrics": [
+            {
+              "metric_name": "ValueDrift(column=AMT_INCOME_TOTAL,...)",
+              "config": {"column": "AMT_INCOME_TOTAL", "method": "K-S p_value",
+                          "threshold": 0.05, "type": "evidently:metric_v2:ValueDrift"},
+              "value": 7.06e-07
+            },
+            {
+              "metric_name": "DriftedColumnsCount(...)",
+              "value": {"count": 40.0, "share": 0.052}
+            },
+            ...
+          ],
+          "tests": [...]
+        }
+
+    For each ValueDrift entry: drift detected when ``value < threshold``
+    (the value is a p-value, lower = more drift).
+
+    Returns: ``{feature_name: {"detected": bool, "score": float, "stattest": str}}``.
+    """
+    results: dict[str, dict[str, Any]] = {}
+    if not report_json:
+        return results
+
+    for metric in report_json.get("metrics", []) or []:
+        config = metric.get("config", {}) or {}
+        # Only ValueDrift entries are per-column; skip the aggregate
+        # DriftedColumnsCount and any other metric type.
+        if config.get("type", "").endswith(":ValueDrift") is False:
+            continue
+        column = config.get("column")
+        if not isinstance(column, str):
+            continue
+        threshold = float(config.get("threshold", 0.05))
+        method = config.get("method") or "—"
+        raw_value = metric.get("value")
+        score: float | None
+        detected: bool | None
+        if isinstance(raw_value, (int, float)):
+            score = float(raw_value)
+            detected = score < threshold
+        else:
+            score = None
+            detected = None
+        results[column] = {
+            "detected": detected,
+            "score": score,
+            "stattest": str(method),
+        }
+    return results
+
+
+@st.cache_data(show_spinner=False)
+def load_drift_summary(_report_json: dict | None) -> dict | None:
+    """Extract the Evidently dataset-level drift verdict from the JSON.
+
+    Reads the ``DriftedColumnsCount`` metric in the snapshot. Returns
+    ``None`` if absent (older Evidently versions or empty report).
+    """
+    if not _report_json:
+        return None
+    for metric in _report_json.get("metrics", []) or []:
+        config = metric.get("config", {}) or {}
+        if config.get("type", "").endswith(":DriftedColumnsCount"):
+            value = metric.get("value") or {}
+            return {
+                "count": int(value.get("count", 0)),
+                "share": float(value.get("share", 0.0)),
+                "threshold": float(config.get("drift_share", 0.5)),
+            }
+    return None
