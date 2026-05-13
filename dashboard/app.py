@@ -169,13 +169,15 @@ with tab_ops:
     total_p95 = handler_p95 + db_log_p95
 
     st.caption(
-        f"**Wall-clock serveur ≈ handler ({handler_p50} ms p50) + DB log ({db_log_p50} ms p50) "
-        f"= {total_p50} ms p50.**  \n"
+        f"**Latence client perçue ≈ handler ({handler_p50} ms p50).** "
+        f"Le **DB log** ({db_log_p50} ms p50) s'exécute en `BackgroundTask` "
+        "après l'envoi de la réponse — il n'impacte plus le client (étape 4).  \n"
         "Le **handler** (`latency_ms`) couvre l'assembly + l'inférence + la construction "
         "de la réponse. Le **DB log** (`db_log_ms`) est mesuré séparément dans `api/logger.py` "
-        "autour de l'INSERT Supabase. Le **plumbing Δ** = `latency_ms - assembly - inference` "
-        "isole le résidu Python entre les sous-mesures (inits de variables, return statement, "
-        "entrée dans le `finally`) — typiquement < 1 ms."
+        "autour de l'INSERT Supabase, et reste affiché comme métrique de santé serveur. "
+        "Le **plumbing Δ** = `latency_ms - assembly - inference` isole le résidu Python "
+        "entre les sous-mesures (inits de variables, return statement, entrée dans le "
+        "`finally`) — typiquement < 1 ms."
     )
 
     cols_perf = st.columns(7)
