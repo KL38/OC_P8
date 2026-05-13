@@ -21,6 +21,12 @@ from sqlalchemy import Engine, create_engine, text
 PROD_TABLE = "predictions_log"
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Cap on rows returned by fetch_recent — the Business tab only renders the
+# 50 most recent ones, and the proba histogram in the Operational tab is
+# representative beyond a few thousand. Without a LIMIT, a 7-day window at
+# production QPS would materialise tens of thousands of rows in memory.
+RECENT_ROW_LIMIT = 5000
+
 
 @st.cache_resource(show_spinner=False)
 def get_engine() -> Engine:
@@ -47,9 +53,15 @@ def get_engine() -> Engine:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_recent(days: int) -> pd.DataFrame:
-    """Wide DataFrame of recent rows. JSONB features stay as Python dicts."""
-    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+def fetch_recent(hours: int) -> pd.DataFrame:
+    """Wide DataFrame of recent rows (capped at ``RECENT_ROW_LIMIT``).
+
+    JSONB ``features`` stays as a Python dict. The cap prevents large
+    windows on a busy day from materialising tens of thousands of rows in
+    Streamlit memory — Business / Operational tabs only consume the latest
+    few hundred anyway.
+    """
+    since = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
     sql = text(
         f"""
         SELECT timestamp, sk_id_curr, client_known, latency_ms, status_code,
@@ -58,15 +70,16 @@ def fetch_recent(days: int) -> pd.DataFrame:
         FROM {PROD_TABLE}
         WHERE timestamp >= :since
         ORDER BY timestamp DESC
+        LIMIT :lim
         """
     )
     with get_engine().connect() as conn:
-        df = pd.read_sql(sql, conn, params={"since": since})
+        df = pd.read_sql(sql, conn, params={"since": since, "lim": RECENT_ROW_LIMIT})
     return df
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_summary(days: int) -> dict:
+def fetch_summary(hours: int) -> dict:
     """Aggregate KPIs computed in SQL to keep the dashboard responsive.
 
     Returns p50/p95 of total ``latency_ms`` plus the étape-4 breakdown
@@ -74,7 +87,7 @@ def fetch_summary(days: int) -> dict:
     breakdown columns are NULL on legacy rows logged before the
     instrumentation was added — PERCENTILE_CONT ignores NULLs natively.
     """
-    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+    since = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
     sql = text(
         f"""
         SELECT
@@ -92,6 +105,13 @@ def fetch_summary(days: int) -> dict:
             PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY inference_ms)        AS inf_p95,
             PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY inference_cpu_ms)    AS inf_cpu_p50,
             PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY inference_cpu_ms)    AS inf_cpu_p95,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY db_log_ms)           AS db_log_p50,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY db_log_ms)           AS db_log_p95,
+            -- plumbing_ms is computed at log time in the API as
+            -- (latency_ms - feature_assembly_ms - inference_ms). We read it
+            -- directly here — no arithmetic in the dashboard SQL.
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY plumbing_ms)         AS plumbing_p50,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY plumbing_ms)         AS plumbing_p95,
             AVG(probability_default)                                AS avg_proba
         FROM {PROD_TABLE}
         WHERE timestamp >= :since
@@ -103,8 +123,8 @@ def fetch_summary(days: int) -> dict:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_volume_by_hour(days: int) -> pd.DataFrame:
-    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+def fetch_volume_by_hour(hours: int) -> pd.DataFrame:
+    since = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
     sql = text(
         f"""
         SELECT date_trunc('hour', timestamp) AS hour,
@@ -123,21 +143,23 @@ def fetch_volume_by_hour(days: int) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_latency_breakdown(days: int) -> pd.DataFrame:
+def fetch_latency_breakdown(hours: int) -> pd.DataFrame:
     """Hourly p50 of each timing component (étape 4).
 
     Returns columns: hour, total_p50, feature_assembly_p50, inference_p50,
-    inference_cpu_p50. NULL columns from legacy rows are skipped by
-    PERCENTILE_CONT, so hours predating the instrumentation surface as NaN.
+    inference_cpu_p50, db_log_p50. NULL columns from legacy rows are
+    skipped by PERCENTILE_CONT, so hours predating the instrumentation
+    surface as NaN.
     """
-    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+    since = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
     sql = text(
         f"""
         SELECT date_trunc('hour', timestamp) AS hour,
                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms)          AS total_p50,
                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY feature_assembly_ms) AS feature_assembly_p50,
                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inference_ms)        AS inference_p50,
-               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inference_cpu_ms)    AS inference_cpu_p50
+               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inference_cpu_ms)    AS inference_cpu_p50,
+               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY db_log_ms)           AS db_log_p50
         FROM {PROD_TABLE}
         WHERE timestamp >= :since AND status_code = 200
         GROUP BY 1

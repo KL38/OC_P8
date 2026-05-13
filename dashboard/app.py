@@ -45,7 +45,13 @@ st.caption("Prêt à Dépenser · prod observability + data drift")
 
 with st.sidebar:
     st.header("Filtres")
-    days = st.slider("Fenêtre (jours)", min_value=1, max_value=90, value=7)
+    hours = st.slider(
+        "Fenêtre (heures)",
+        min_value=1,
+        max_value=168,
+        value=24,
+        help="Plage temporelle pour toutes les métriques. 24h = 1 jour, 168h = 7 jours.",
+    )
     st.markdown("---")
     st.markdown(
         "**Sources**\n\n"
@@ -59,17 +65,30 @@ tab_ops, tab_drift, tab_business, tab_advanced = st.tabs(
     ["⚙️ Opérationnel", "🌊 Data Drift", "💼 Business", "🧠 Indicateurs avancés"]
 )
 
+# Fetched once and reused across the Operational and Business tabs. The
+# @st.cache_data decorator on fetch_recent already deduplicates the DB
+# round-trip, but computing the boolean mask twice would still cost two
+# DataFrame allocations.
+try:
+    _recent_df = fetch_recent(hours)
+    _ok_df = _recent_df[_recent_df["status_code"] == 200]
+except Exception:
+    # If Supabase is unreachable, the tab_ops error path below already shows
+    # the message; just keep these empty so downstream blocks degrade gracefully.
+    _recent_df = pd.DataFrame()
+    _ok_df = pd.DataFrame()
+
 
 # -------------------------------------------------------------------- Ops --
 with tab_ops:
     try:
-        summary = fetch_summary(days)
+        summary = fetch_summary(hours)
     except Exception as exc:
         st.error(f"Impossible de joindre Supabase : {exc}")
         st.stop()
 
     if not summary["total"]:
-        st.warning(f"Aucune prédiction enregistrée sur les {days} derniers jours.")
+        st.warning(f"Aucune prédiction enregistrée sur les {hours} dernières heures.")
         st.stop()
 
     cols = st.columns(6)
@@ -80,8 +99,16 @@ with tab_ops:
         delta=f"{(summary['errors'] / summary['total']) * 100:.1f} %",
         delta_color="inverse",
     )
-    cols[2].metric("Latence p50", f"{int(summary['p50'] or 0)} ms")
-    cols[3].metric("Latence p95", f"{int(summary['p95'] or 0)} ms")
+    cols[2].metric(
+        "Handler p50",
+        f"{int(summary['p50'] or 0)} ms",
+        help="`latency_ms` = handler FastAPI seul. Voir la section *Décomposition* plus bas pour le wall-clock complet (handler + DB log).",
+    )
+    cols[3].metric(
+        "Handler p95",
+        f"{int(summary['p95'] or 0)} ms",
+        help="`latency_ms` p95.",
+    )
     cols[4].metric(
         "% REFUSED",
         f"{(summary['refused'] / max(summary['total'], 1)) * 100:.1f} %",
@@ -93,7 +120,7 @@ with tab_ops:
     )
 
     st.subheader("Volume & latence par heure")
-    hourly = fetch_volume_by_hour(days)
+    hourly = fetch_volume_by_hour(hours)
     if not hourly.empty:
         c1, c2 = st.columns(2)
         with c1:
@@ -112,56 +139,102 @@ with tab_ops:
             st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Décomposition de la latence")
+
+    def _ms(v) -> int:
+        """Format helper — round to int ms, default 0 when SQL returns NULL."""
+        return 0 if v is None else int(round(float(v)))
+
+    handler_p50 = _ms(summary["p50"])
+    handler_p95 = _ms(summary["p95"])
+    asm_p50 = _ms(summary["asm_p50"])
+    asm_p95 = _ms(summary["asm_p95"])
+    inf_p50 = _ms(summary["inf_p50"])
+    inf_p95 = _ms(summary["inf_p95"])
+    inf_cpu_p50 = _ms(summary["inf_cpu_p50"])
+    inf_cpu_p95 = _ms(summary["inf_cpu_p95"])
+    db_log_p50 = _ms(summary["db_log_p50"])
+    db_log_p95 = _ms(summary["db_log_p95"])
+    plumb_p50 = _ms(summary["plumbing_p50"])
+    plumb_p95 = _ms(summary["plumbing_p95"])
+    total_p50 = handler_p50 + db_log_p50
+    total_p95 = handler_p95 + db_log_p95
+
     st.caption(
-        "Le `latency_ms` total est mesuré en bout-en-bout (handler FastAPI). "
-        "`feature_assembly_ms` couvre lookup feature store + transforms + ratios + reindex. "
-        "`inference_ms` est le wall-clock de `model.predict_proba`. "
-        "`inference_cpu_ms` est le CPU time consommé pendant l'inférence (peut être 0 sur paths très rapides). "
-        "Le delta `latency_ms - assembly - inference` mesure l'overhead restant (DB log, sérialisation, parsing)."
+        f"**Wall-clock serveur ≈ handler ({handler_p50} ms p50) + DB log ({db_log_p50} ms p50) "
+        f"= {total_p50} ms p50.**  \n"
+        "Le **handler** (`latency_ms`) couvre l'assembly + l'inférence + la construction "
+        "de la réponse. Le **DB log** (`db_log_ms`) est mesuré séparément dans `api/logger.py` "
+        "autour de l'INSERT Supabase. Le **plumbing Δ** = `latency_ms - assembly - inference` "
+        "isole le résidu Python entre les sous-mesures (inits de variables, return statement, "
+        "entrée dans le `finally`) — typiquement < 1 ms."
     )
-    cols_perf = st.columns(4)
+
+    cols_perf = st.columns(6)
     cols_perf[0].metric(
-        "Total p50 / p95",
-        f"{int(summary['p50'] or 0)} / {int(summary['p95'] or 0)} ms",
+        "Handler p50 / p95",
+        f"{handler_p50} / {handler_p95} ms",
+        help="`latency_ms` = assembly + inference + plumbing. **N'inclut pas** le DB log.",
     )
     cols_perf[1].metric(
         "Feature assembly p50 / p95",
-        f"{(summary['asm_p50'] or 0):.1f} / {(summary['asm_p95'] or 0):.1f} ms",
+        f"{asm_p50} / {asm_p95} ms",
+        help="Lookup feature store + transforms + ratios + reindex.",
     )
     cols_perf[2].metric(
         "Inference wall p50 / p95",
-        f"{(summary['inf_p50'] or 0):.2f} / {(summary['inf_p95'] or 0):.2f} ms",
+        f"{inf_p50} / {inf_p95} ms",
+        help="`model.predict_proba` (wall-clock).",
     )
     cols_perf[3].metric(
         "Inference CPU p50 / p95",
-        f"{(summary['inf_cpu_p50'] or 0):.2f} / {(summary['inf_cpu_p95'] or 0):.2f} ms",
+        f"{inf_cpu_p50} / {inf_cpu_p95} ms",
+        help="CPU time consommé pendant l'inférence (peut lire 0 sur paths très rapides — résolution de `time.process_time`).",
+    )
+    cols_perf[4].metric(
+        "DB log p50 / p95",
+        f"{db_log_p50} / {db_log_p95} ms",
+        help="INSERT Supabase mesuré autour de `conn.execute(insert(...))` dans `api/logger.py`. Domine généralement l'overhead total.",
+    )
+    cols_perf[5].metric(
+        "Plumbing Δ p50 / p95",
+        f"{plumb_p50} / {plumb_p95} ms",
+        help="`latency_ms - feature_assembly_ms - inference_ms`. Résidu Python entre les sous-mesures (typiquement < 1 ms).",
     )
 
-    breakdown = fetch_latency_breakdown(days)
+    breakdown = fetch_latency_breakdown(hours)
     if not breakdown.empty:
         breakdown = breakdown.copy()
-        breakdown["overhead_p50"] = (
+        # Plumbing per hour = handler - assembly - inference, clamped at 0 to
+        # absorb sub-ms rounding artefacts. We then stack 4 components whose
+        # total equals handler + db_log = full server wall-clock.
+        breakdown["plumbing_p50"] = (
             breakdown["total_p50"].fillna(0)
             - breakdown["feature_assembly_p50"].fillna(0)
             - breakdown["inference_p50"].fillna(0)
         ).clip(lower=0)
         long_df = breakdown.melt(
             id_vars="hour",
-            value_vars=["feature_assembly_p50", "inference_p50", "overhead_p50"],
+            value_vars=[
+                "feature_assembly_p50",
+                "inference_p50",
+                "plumbing_p50",
+                "db_log_p50",
+            ],
             var_name="composant",
             value_name="ms",
         )
         long_df["composant"] = long_df["composant"].map({
             "feature_assembly_p50": "Feature assembly",
             "inference_p50": "Model inference",
-            "overhead_p50": "Overhead (DB log + sérialisation)",
+            "plumbing_p50": "Plumbing Python (résidu)",
+            "db_log_p50": "DB log (INSERT Supabase)",
         })
         fig_breakdown = px.area(
             long_df,
             x="hour",
             y="ms",
             color="composant",
-            title="Décomposition p50 par heure (stacked)",
+            title="Décomposition p50 par heure (stacked = wall-clock serveur)",
         )
         fig_breakdown.update_layout(yaxis_title="latence p50 (ms)")
         st.plotly_chart(fig_breakdown, use_container_width=True)
@@ -172,12 +245,10 @@ with tab_ops:
         )
 
     st.subheader("Distribution des probabilités")
-    recent = fetch_recent(days)
-    ok = recent[recent["status_code"] == 200]
-    if not ok.empty:
+    if not _ok_df.empty:
         st.plotly_chart(
             px.histogram(
-                ok,
+                _ok_df,
                 x="probability_default",
                 nbins=40,
                 color="decision",
@@ -204,11 +275,10 @@ with tab_drift:
 
 # --------------------------------------------------------------- Business --
 with tab_business:
-    recent = fetch_recent(days)
-    if recent.empty:
+    if _recent_df.empty:
         st.warning("Pas de données pour la période.")
     else:
-        ok = recent[recent["status_code"] == 200]
+        ok = _ok_df
         c1, c2 = st.columns(2)
         with c1:
             decision_counts = ok["decision"].value_counts().reset_index()

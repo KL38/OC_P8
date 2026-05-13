@@ -78,7 +78,8 @@ def test_predict_inserts_row(client, valid_payload, test_engine):
             row = conn.execute(
                 text(
                     f"SELECT decision, probability_default, status_code, features, "
-                    f"feature_assembly_ms, inference_ms, inference_cpu_ms "
+                    f"feature_assembly_ms, inference_ms, inference_cpu_ms, "
+                    f"plumbing_ms, db_log_ms "
                     f"FROM {TEST_TABLE} WHERE sk_id_curr = :sk_id"
                 ),
                 {"sk_id": sk_id},
@@ -88,13 +89,21 @@ def test_predict_inserts_row(client, valid_payload, test_engine):
         assert 0.0 <= row.probability_default <= 1.0
         assert isinstance(row.features, dict) and len(row.features) > 0
         # Fine-grained timings populated on the success path. Loose bounds —
-        # we only assert positivity and a sane upper bound (10 s would already
-        # be a major regression on a single-row predict).
-        assert row.feature_assembly_ms is not None and 0.0 < row.feature_assembly_ms < 10_000.0
-        assert row.inference_ms is not None and 0.0 < row.inference_ms < 10_000.0
+        # we only assert non-negativity (rounded ms can read as 0 on very
+        # fast paths) and a sane upper bound (10 s would already be a major
+        # regression on a single-row predict).
+        assert row.feature_assembly_ms is not None and 0 <= row.feature_assembly_ms < 10_000
+        assert row.inference_ms is not None and 0 <= row.inference_ms < 10_000
         # CPU time can read as 0 on very fast paths (process_time resolution
         # is platform-dependent); only assert non-negative.
-        assert row.inference_cpu_ms is not None and row.inference_cpu_ms >= 0.0
+        assert row.inference_cpu_ms is not None and row.inference_cpu_ms >= 0
+        # plumbing_ms is computed in api.main as (latency - asm - inf). With
+        # round() on all three, the result has ±0.5 ms noise per term, so a
+        # small negative is possible — bound to a sane range.
+        assert row.plumbing_ms is not None and -3 <= row.plumbing_ms < 10_000
+        # db_log_ms is filled by the follow-up UPDATE after the INSERT.
+        # On a real Supabase row-trip this is typically 10-50 ms.
+        assert row.db_log_ms is not None and 0 <= row.db_log_ms < 10_000
     finally:
         with test_engine.begin() as conn:
             conn.execute(
