@@ -60,14 +60,25 @@ def build_predictions_log_table(name: str, metadata: MetaData) -> Table:
         ),
         Column("sk_id_curr", Integer, nullable=False, index=True),
         Column("client_known", Boolean, nullable=False),
-        # Operational metrics
+        # Operational metrics. All timings are stored as INTEGER milliseconds —
+        # we always round at the Python layer (``round()``, not ``int()``)
+        # before insert, which gives unbiased values. The handler ``latency_ms``
+        # only covers the request handler body (assembly + inference + return
+        # construction). The DB INSERT itself is measured separately as
+        # ``db_log_ms`` so the full server-side budget can be reconstructed as
+        # ``latency_ms + db_log_ms``.
         Column("latency_ms", Integer, nullable=False),
         # Fine-grained timings added in étape 4. Nullable so legacy rows
         # (pre-instrumentation) remain valid. Populated only on the success
         # path — error rows leave them NULL.
-        Column("feature_assembly_ms", Float, nullable=True),
-        Column("inference_ms", Float, nullable=True),
-        Column("inference_cpu_ms", Float, nullable=True),
+        Column("feature_assembly_ms", Integer, nullable=True),
+        Column("inference_ms", Integer, nullable=True),
+        Column("inference_cpu_ms", Integer, nullable=True),
+        # Plumbing = latency_ms - feature_assembly_ms - inference_ms, computed
+        # once in the API at log time so the dashboard (and any other reader)
+        # reads a self-describing column instead of re-deriving the formula.
+        Column("plumbing_ms", Integer, nullable=True),
+        Column("db_log_ms", Integer, nullable=True),
         Column("status_code", Integer, nullable=False, server_default="200"),
         Column("error_message", Text, nullable=True),
         # Payloads

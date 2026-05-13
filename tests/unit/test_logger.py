@@ -47,9 +47,29 @@ def test_noop_when_engine_unset() -> None:
     _call()  # must not raise
 
 
-def test_insert_payload_contains_expected_fields(monkeypatch) -> None:
+def _build_mock_engine(captured: dict, monkeypatch, fake_id: int = 42) -> None:
+    """Wire a MagicMock engine that captures INSERT and UPDATE payloads.
+
+    log_prediction now performs two roundtrips:
+      1. INSERT ... RETURNING id  -> mock returns fake_id from scalar_one()
+      2. UPDATE ... SET db_log_ms WHERE id = X
+    The mock distinguishes them by inspecting the compiled SQL string.
+    """
     fake_engine = MagicMock()
-    captured = {}
+
+    class _Result:
+        def scalar_one(self):
+            return fake_id
+
+    class _Conn:
+        def execute(self, stmt):
+            compiled = stmt.compile()
+            params = compiled.params
+            if "INSERT" in str(compiled).upper():
+                captured["insert"] = params
+            else:
+                captured["update"] = params
+            return _Result()
 
     class _Ctx:
         def __enter__(self):
@@ -58,21 +78,23 @@ def test_insert_payload_contains_expected_fields(monkeypatch) -> None:
         def __exit__(self, *a):
             return False
 
-    class _Conn:
-        def execute(self, stmt):
-            captured["values"] = stmt.compile().params
-
     fake_engine.begin.return_value = _Ctx()
     monkeypatch.setattr(db, "_engine", fake_engine)
 
+
+def test_insert_payload_contains_expected_fields(monkeypatch) -> None:
+    captured: dict = {}
+    _build_mock_engine(captured, monkeypatch)
+
     _call(
         features=pd.DataFrame([{"EXT_SOURCE_1": 0.42, "FOO": np.nan, "BAR": np.inf}]),
-        feature_assembly_ms=12.5,
-        inference_ms=3.2,
-        inference_cpu_ms=2.9,
+        feature_assembly_ms=12,
+        inference_ms=3,
+        inference_cpu_ms=3,
+        plumbing_ms=1,
     )
 
-    values = captured["values"]
+    values = captured["insert"]
     assert values["sk_id_curr"] == 100002
     assert values["decision"] == "GRANTED"
     assert values["probability_default"] == 0.27
@@ -82,9 +104,16 @@ def test_insert_payload_contains_expected_fields(monkeypatch) -> None:
     assert values["features"]["FOO"] is None
     assert values["features"]["BAR"] is None
     # Fine-grained timings propagated through to the insert payload.
-    assert values["feature_assembly_ms"] == pytest.approx(12.5)
-    assert values["inference_ms"] == pytest.approx(3.2)
-    assert values["inference_cpu_ms"] == pytest.approx(2.9)
+    assert values["feature_assembly_ms"] == 12
+    assert values["inference_ms"] == 3
+    assert values["inference_cpu_ms"] == 3
+    assert values["plumbing_ms"] == 1
+    # db_log_ms is filled in by the follow-up UPDATE, not the INSERT.
+    assert values["db_log_ms"] is None
+    # And the UPDATE carries an int db_log_ms.
+    assert "update" in captured
+    assert isinstance(captured["update"]["db_log_ms"], int)
+    assert captured["update"]["db_log_ms"] >= 0
 
 
 def test_db_failure_is_swallowed(monkeypatch, caplog) -> None:
@@ -97,22 +126,8 @@ def test_db_failure_is_swallowed(monkeypatch, caplog) -> None:
 
 
 def test_error_path_logs_status_and_message(monkeypatch) -> None:
-    fake_engine = MagicMock()
-    captured = {}
-
-    class _Ctx:
-        def __enter__(self):
-            return _Conn()
-
-        def __exit__(self, *a):
-            return False
-
-    class _Conn:
-        def execute(self, stmt):
-            captured["values"] = stmt.compile().params
-
-    fake_engine.begin.return_value = _Ctx()
-    monkeypatch.setattr(db, "_engine", fake_engine)
+    captured: dict = {}
+    _build_mock_engine(captured, monkeypatch)
 
     api_logger.log_prediction(
         sk_id_curr=999,
@@ -128,7 +143,7 @@ def test_error_path_logs_status_and_message(monkeypatch) -> None:
         error_message="boom",
     )
 
-    values = captured["values"]
+    values = captured["insert"]
     assert values["status_code"] == 500
     assert values["error_message"] == "boom"
     assert values["decision"] == "ERROR"
@@ -137,3 +152,7 @@ def test_error_path_logs_status_and_message(monkeypatch) -> None:
     assert values["feature_assembly_ms"] is None
     assert values["inference_ms"] is None
     assert values["inference_cpu_ms"] is None
+    assert values["plumbing_ms"] is None
+    # db_log_ms is still measured on the error path — the INSERT still happened.
+    assert "update" in captured
+    assert isinstance(captured["update"]["db_log_ms"], int)

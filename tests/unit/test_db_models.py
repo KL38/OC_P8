@@ -39,6 +39,8 @@ def test_table_contains_expected_columns() -> None:
         "feature_assembly_ms",
         "inference_ms",
         "inference_cpu_ms",
+        "plumbing_ms",
+        "db_log_ms",
         "status_code",
         "error_message",
         "raw_input",
@@ -70,3 +72,5 @@ def test_required_columns_are_not_null() -> None:
     assert cols["feature_assembly_ms"].nullable is True
     assert cols["inference_ms"].nullable is True
     assert cols["inference_cpu_ms"].nullable is True
+    assert cols["plumbing_ms"].nullable is True
+    assert cols["db_log_ms"].nullable is True

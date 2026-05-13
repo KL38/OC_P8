@@ -158,22 +158,23 @@ async def predict(payload: PredictionRequest, request: Request) -> PredictionRes
     decision: str | None = None
     status_code = status.HTTP_200_OK
     error_message: str | None = None
-    # Fine-grained timings (étape 4). Left as None when the corresponding
-    # sub-step did not complete (e.g. assembly raised before inference ran).
-    feature_assembly_ms: float | None = None
-    inference_ms: float | None = None
-    inference_cpu_ms: float | None = None
+    # Fine-grained timings (étape 4). Stored as int milliseconds (via round()
+    # to avoid the systematic downward bias of int() on small values). Left
+    # as None when the corresponding sub-step did not complete.
+    feature_assembly_ms: int | None = None
+    inference_ms: int | None = None
+    inference_cpu_ms: int | None = None
 
     try:
         t_asm = time.perf_counter()
         features, client_known = assemble(raw_inputs, sk_id_curr=sk_id, artefacts=artefacts)
-        feature_assembly_ms = (time.perf_counter() - t_asm) * 1000.0
+        feature_assembly_ms = round((time.perf_counter() - t_asm) * 1000.0)
 
         t_inf_wall = time.perf_counter()
         t_inf_cpu = time.process_time()
         proba, decision = predictor.predict(features)
-        inference_ms = (time.perf_counter() - t_inf_wall) * 1000.0
-        inference_cpu_ms = (time.process_time() - t_inf_cpu) * 1000.0
+        inference_ms = round((time.perf_counter() - t_inf_wall) * 1000.0)
+        inference_cpu_ms = round((time.process_time() - t_inf_cpu) * 1000.0)
 
         return PredictionResponse(
             sk_id_curr=sk_id,
@@ -196,6 +197,17 @@ async def predict(payload: PredictionRequest, request: Request) -> PredictionRes
             detail=f"Prediction failed: {exc.__class__.__name__}",
         ) from exc
     finally:
+        latency_ms = round((time.perf_counter() - started) * 1000.0)
+        # Plumbing = handler time not accounted for by the two timed sub-steps.
+        # Computed here (not in SQL) so every row carries a self-describing
+        # value. Only meaningful on the success path where both sub-steps
+        # ran. Clamped at 0 so the rounding noise from three independent
+        # round() calls (each ±0.5 ms) can never produce a stored negative.
+        plumbing_ms: int | None
+        if feature_assembly_ms is not None and inference_ms is not None:
+            plumbing_ms = max(0, latency_ms - feature_assembly_ms - inference_ms)
+        else:
+            plumbing_ms = None
         log_prediction(
             sk_id_curr=sk_id,
             client_known=client_known,
@@ -205,10 +217,11 @@ async def predict(payload: PredictionRequest, request: Request) -> PredictionRes
             decision=decision,
             threshold=predictor.threshold,
             model_version=predictor.model_version,
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=latency_ms,
             feature_assembly_ms=feature_assembly_ms,
             inference_ms=inference_ms,
             inference_cpu_ms=inference_cpu_ms,
+            plumbing_ms=plumbing_ms,
             status_code=status_code,
             error_message=error_message,
         )
