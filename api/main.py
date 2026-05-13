@@ -13,7 +13,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from api import db, settings
@@ -144,7 +144,11 @@ async def model_info(request: Request) -> ModelInfoResponse:
 
 
 @app.post("/predict", response_model=PredictionResponse, tags=["scoring"])
-async def predict(payload: PredictionRequest, request: Request) -> PredictionResponse:
+async def predict(
+    payload: PredictionRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> PredictionResponse:
     raw_inputs = payload.model_dump()
     sk_id = raw_inputs.pop("SK_ID_CURR")
 
@@ -208,7 +212,7 @@ async def predict(payload: PredictionRequest, request: Request) -> PredictionRes
             plumbing_ms = max(0, latency_ms - feature_assembly_ms - inference_ms)
         else:
             plumbing_ms = None
-        log_prediction(
+        log_kwargs: dict[str, object | None] = dict(
             sk_id_curr=sk_id,
             client_known=client_known,
             raw_input=raw_inputs,
@@ -225,3 +229,14 @@ async def predict(payload: PredictionRequest, request: Request) -> PredictionRes
             status_code=status_code,
             error_message=error_message,
         )
+        # Success: defer the Supabase round-trip until AFTER the response
+        # is sent, so the client never waits on ~350 ms of DB log overhead.
+        # Failure: log synchronously — BackgroundTasks scheduled on a route
+        # are attached to its Response, and the exception-handler chain
+        # builds its own Response, silently dropping pending tasks. Losing
+        # observability on errors would be a worse trade-off than the
+        # one-shot latency hit paid by failing requests.
+        if status_code < 400:
+            background_tasks.add_task(log_prediction, **log_kwargs)
+        else:
+            log_prediction(**log_kwargs)
