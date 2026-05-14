@@ -66,8 +66,17 @@ class CreditScoringPredictor:
             model_info_path, default_threshold
         )
 
+        # Single-threaded: this endpoint serves one request × one row at a time.
+        # The default thread pool (intra_op = num_cpus) buys nothing on 1-row
+        # inference (already ~30 µs single-threaded) and contends with pandas
+        # during the feature-assembly step on small shared VMs like HF Spaces.
+        sess_options = ort.SessionOptions()
+        sess_options.intra_op_num_threads = 1
+        sess_options.inter_op_num_threads = 1
         session = ort.InferenceSession(
-            str(model_path), providers=["CPUExecutionProvider"]
+            str(model_path),
+            sess_options=sess_options,
+            providers=["CPUExecutionProvider"],
         )
         input_name = session.get_inputs()[0].name
         # The LightGBM→ONNX graph emits two outputs: labels (idx 0) and the
