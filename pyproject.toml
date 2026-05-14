@@ -31,12 +31,9 @@ dependencies = [
 dev = [
     "evidently>=0.7",
     "httpx>=0.28.1",
-<<<<<<< Updated upstream
     "line-profiler>=5.0.2",
-=======
     "onnxmltools>=1.16.0",
     "onnxruntime>=1.26.0",
->>>>>>> Stashed changes
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.12",
