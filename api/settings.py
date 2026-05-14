@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-MODEL_PATH = Path(os.getenv("OC_P8_MODEL_PATH", ROOT / "models" / "model.joblib"))
+MODEL_PATH = Path(os.getenv("OC_P8_MODEL_PATH", ROOT / "models" / "model.onnx"))
 MODEL_INFO_PATH = Path(
     os.getenv("OC_P8_MODEL_INFO_PATH", ROOT / "models" / "model_info.json")
 )

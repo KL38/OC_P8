@@ -10,7 +10,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import joblib
 import numpy as np
 import pandas as pd
 import pytest
@@ -171,19 +170,27 @@ VALID_PAYLOAD: dict[str, Any] = {
 }
 
 
-class FakeModel:
-    """Minimal stand-in for the unwrapped LightGBM sklearn classifier.
+def _build_fake_predict_fn(feature_names: list[str]):
+    """Build a predict_fn that drives proba from AMT_INCOME_TOTAL / AMT_CREDIT.
 
-    Returns a probability driven by AMT_INCOME_TOTAL / AMT_CREDIT so tests can
-    deterministically exercise both GRANTED and REFUSED branches.
+    Replaces the legacy FakeModel(predict_proba) used before the ONNX
+    migration. Operates on the numpy array passed by CreditScoringPredictor,
+    looking up positions via feature_names so tests can deterministically
+    exercise both GRANTED and REFUSED branches.
     """
+    income_idx = feature_names.index("AMT_INCOME_TOTAL")
+    credit_idx = feature_names.index("AMT_CREDIT")
 
-    def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
-        income = float(df.iloc[0].get("AMT_INCOME_TOTAL", 0) or 0)
-        credit = float(df.iloc[0].get("AMT_CREDIT", 1) or 1)
-        ratio = income / max(credit, 1)
+    def predict_fn(arr: np.ndarray) -> np.ndarray:
+        # arr is (1, n_features) float32 — NaN values may exist for skipped fields.
+        income = float(arr[0, income_idx]) if not np.isnan(arr[0, income_idx]) else 0.0
+        credit_raw = arr[0, credit_idx]
+        credit = float(credit_raw) if not np.isnan(credit_raw) else 1.0
+        ratio = income / max(credit, 1.0)
         proba_default = max(0.0, min(1.0, 1.0 - ratio))
         return np.array([[1 - proba_default, proba_default]])
+
+    return predict_fn
 
 
 @pytest.fixture
@@ -267,8 +274,12 @@ def synthetic_artefacts_dir(tmp_path: Path, synthetic_feature_names: list[str]) 
     )
     feature_store.to_parquet(data_dir / "features_store.parquet")
 
-    # 6. model.joblib — FakeModel
-    joblib.dump(FakeModel(), models_dir / "model.joblib")
+    # 6. model.onnx — placeholder. The real ONNX session is bypassed by the
+    # patched_settings fixture (it monkey-patches CreditScoringPredictor.load
+    # to inject a deterministic fake predict_fn), so this file just needs to
+    # exist for paths that os.stat() it. Tests do NOT run actual ONNX
+    # inference; that's covered by the live model in CI smoke tests.
+    (models_dir / "model.onnx").write_bytes(b"")
 
     # 7. model_info.json — minimal subset used by predictor + main routes
     (models_dir / "model_info.json").write_text(
@@ -285,13 +296,22 @@ def synthetic_artefacts_dir(tmp_path: Path, synthetic_feature_names: list[str]) 
 
 
 @pytest.fixture
-def patched_settings(monkeypatch, synthetic_artefacts_dir: Path) -> None:
-    """Point api.settings at the synthetic artefacts (re-import safe)."""
+def patched_settings(
+    monkeypatch,
+    synthetic_artefacts_dir: Path,
+    synthetic_feature_names: list[str],
+) -> None:
+    """Point api.settings at the synthetic artefacts (re-import safe).
+
+    Also replaces CreditScoringPredictor.load with an override that injects a
+    deterministic fake predict_fn — this avoids needing a real ONNX file
+    keyed to the 23 synthetic feature columns.
+    """
     base = synthetic_artefacts_dir
     # Force the prediction logger to no-op for unit/integration FastAPI tests
     # so they don't accidentally hit a developer's local DATABASE_URL.
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("OC_P8_MODEL_PATH", str(base / "models" / "model.joblib"))
+    monkeypatch.setenv("OC_P8_MODEL_PATH", str(base / "models" / "model.onnx"))
     monkeypatch.setenv("OC_P8_MODEL_INFO_PATH", str(base / "models" / "model_info.json"))
     monkeypatch.setenv(
         "OC_P8_FEATURE_NAMES_PATH", str(base / "models" / "feature_names.json")
@@ -324,6 +344,32 @@ def patched_settings(monkeypatch, synthetic_artefacts_dir: Path) -> None:
     from api import db
 
     db.reset_engine()
+
+    # Replace CreditScoringPredictor.load() with a stub that injects the
+    # deterministic fake predict_fn keyed to the synthetic feature order.
+    # Avoids the need for a real .onnx file in unit/integration tests.
+    # Reuses resolve_threshold_and_version() so the parsing rules stay
+    # consistent with production code.
+    from api.predictor import CreditScoringPredictor, resolve_threshold_and_version
+
+    fake_predict_fn = _build_fake_predict_fn(synthetic_feature_names)
+
+    def fake_load(
+        cls,
+        model_path: Path,
+        model_info_path: Path,
+        default_threshold: float,
+    ) -> "CreditScoringPredictor":
+        threshold, version = resolve_threshold_and_version(
+            model_info_path, default_threshold
+        )
+        return cls(
+            predict_fn=fake_predict_fn,
+            threshold=threshold,
+            model_version=version,
+        )
+
+    monkeypatch.setattr(CreditScoringPredictor, "load", classmethod(fake_load))
 
 
 @pytest.fixture
