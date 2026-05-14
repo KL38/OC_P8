@@ -1946,12 +1946,9 @@ dependencies = [
 dev = [
     { name = "evidently" },
     { name = "httpx" },
-<<<<<<< Updated upstream
     { name = "line-profiler" },
-=======
     { name = "onnxmltools" },
     { name = "onnxruntime" },
->>>>>>> Stashed changes
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
