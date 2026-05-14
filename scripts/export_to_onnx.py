@@ -47,6 +47,7 @@ def export(
         zipmap=False,  # Output raw probability array instead of list-of-dicts.
     )
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(onnx_model.SerializeToString())
     return out_path
 
