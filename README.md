@@ -64,12 +64,6 @@ pinned: false
 
 ## About The Project
 
-<div align="center">
-  <img src="livrables/screenshot%20monitoring.png" alt="Monitoring dashboard" width="720" />
-  <br />
-  <em>Streamlit monitoring dashboard — Ops, Drift and Business tabs.</em>
-</div>
-
 <br />
 
 The **Credit Scoring API** exposes a single `POST /predict` endpoint. Given a loan application (`SK_ID_CURR` + 120 raw `application_train` fields), it returns:
