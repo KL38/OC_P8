@@ -19,8 +19,8 @@ pinned: false
   <h1 align="center">OC P8 — Credit Scoring API</h1>
   <p align="center">
     Production-grade FastAPI wrapper around the LightGBM credit scoring model
-    trained in OC_P6. Built for <em>Prêt à Dépenser</em>'s Crédit Express department:
-    real-time default risk prediction for loan officers.
+    trained in OC_P6. Built for a consumer-credit lender's express-loan
+    department: real-time default risk prediction for loan officers.
     <br />
     <a href="http://localhost:8000/docs"><strong>Swagger UI (local) »</strong></a>
     <br />
@@ -53,12 +53,24 @@ pinned: false
   - [Required secrets](#required-secrets)
 - [Docker](#docker)
 - [Project Layout](#project-layout)
+- [Monitoring & Data Drift (Step 3)](#monitoring--data-drift-step-3)
+- [Latency Optimisation (Step 4)](#latency-optimisation-step-4)
 - [Roadmap](#roadmap)
 - [License](#license)
+- [Contact](#contact)
+- [Acknowledgments](#acknowledgments)
 
 ---
 
 ## About The Project
+
+<div align="center">
+  <img src="livrables/screenshot%20monitoring.png" alt="Monitoring dashboard" width="720" />
+  <br />
+  <em>Streamlit monitoring dashboard — Ops, Drift and Business tabs.</em>
+</div>
+
+<br />
 
 The **Credit Scoring API** exposes a single `POST /predict` endpoint. Given a loan application (`SK_ID_CURR` + 120 raw `application_train` fields), it returns:
 
@@ -68,6 +80,14 @@ The **Credit Scoring API** exposes a single `POST /predict` endpoint. Given a lo
 
 The threshold **0.33** is optimised for an asymmetric cost function (10 × false negatives + false positives), meaning the model is intentionally conservative: missing a bad borrower costs 10× more than wrongly refusing a good one.
 
+The project is organised around four milestones:
+
+| Step | Theme | Status |
+|------|-------|--------|
+| 1–2 | FastAPI wrapper + CI/CD to HF Space | ✅ |
+| 3 | Supabase logging + Evidently drift + Streamlit dashboard | ✅ |
+| 4 | Profiling, ONNX export, latency optimisation | ✅ |
+
 ---
 
 ## Built With
@@ -75,6 +95,7 @@ The threshold **0.33** is optimised for an asymmetric cost function (10 × false
 [![Python][python-badge]][python-url]
 [![FastAPI][fastapi-badge]][fastapi-url]
 [![LightGBM][lightgbm-badge]][lightgbm-url]
+[![ONNX][onnx-badge]][onnx-url]
 [![uv][uv-badge]][uv-url]
 [![Docker][docker-badge]][docker-url]
 [![GitHub Actions][gha-badge]][gha-url]
@@ -90,7 +111,7 @@ The threshold **0.33** is optimised for an asymmetric cost function (10 × false
 | Python | 3.12 | [python.org](https://www.python.org/downloads/) |
 | uv | latest | `pip install uv` |
 | Docker | any | [docs.docker.com](https://docs.docker.com/get-docker/) |
-| OC_P6 data | — | `C:/Users/Kevin/projects/OC_P6/data/` |
+| OC_P6 data | — | ~/OC_P6/data/` |
 
 ### One-time offline setup
 
@@ -108,10 +129,18 @@ This creates:
 |----------|------|-------------|
 | `data/features_store.parquet` | ~200 MB | Pre-computed bureau / prev / POS / CC / install aggregates |
 | `models/feature_names.json` | ~30 KB | Canonical 768-column order |
-| `models/app_train_columns.json` | ~50 KB | Spec for the 122 raw input columns |
+| `models/app_train_columns.json` | ~50 KB | Spec for the 122 Kaggle CSV columns (SK_ID_CURR + TARGET + 120 features) |
 | `models/app_train_categories.json` | ~5 KB | Categorical vocabulary for one-hot encoding |
 | `models/app_train_binary_mappings.json` | <1 KB | Factorize codes for binary columns |
 | `models/no_history_template.json` | ~30 KB | Default values for unknown clients |
+| `models/model.onnx` | ~2 MB | ONNX export of the LightGBM model (served at runtime) |
+
+Re-export the ONNX model whenever `model.joblib` is refreshed:
+
+```powershell
+uv run python scripts/export_to_onnx.py
+uv run python scripts/benchmark_onnx.py --n 1000   # sanity-check drift & latency
+```
 
 ### Run the API
 
@@ -150,7 +179,7 @@ All tests run **without the real 5 GB training data**. The `conftest.py` fixture
 - A 2-row `features_store.parquet` (clients 100002 and 100003)
 - Minimal JSON vocabularies (13 categorical columns, 3 binary columns)
 - A `FakeModel` whose probability is deterministically driven by `AMT_INCOME_TOTAL / AMT_CREDIT`, so tests can exercise both `GRANTED` and `REFUSED` branches reliably
-- A realistic 122-field `VALID_PAYLOAD` dict reused across all test modules
+- A realistic 121-field `VALID_PAYLOAD` dict (SK_ID_CURR + 120 raw inputs) reused across all test modules
 
 The `patched_settings` fixture redirects all `api.settings` paths to `tmp_path` via env vars + `importlib.reload()`, so no monkey-patching of internal state is needed.
 
@@ -217,7 +246,7 @@ You can also use the interactive **Swagger UI** at `/docs` → `POST /predict` �
 ```
 JSON {SK_ID_CURR + 120 raw application_train fields}
         ▼
-   Pydantic validation (122 ranged fields)
+   Pydantic validation (121 ranged fields = SK_ID_CURR + 120 raw)
         ▼
    ┌─────────────────────────┐
    │ Known SK_ID_CURR ?      │
@@ -231,15 +260,18 @@ JSON {SK_ID_CURR + 120 raw application_train fields}
    transform app_train inputs (factorize + one-hot
    with training categories) + 5 derived ratios
                  ▼
-   reindex to feature_names → 768 cols
+   reindex to feature_names → 768 cols (float32 ndarray)
                  ▼
-   model.predict_proba()[:, 1]
+   ONNX Runtime InferenceSession (single-threaded)
                  ▼
    decision = proba ≥ 0.33  (business threshold optimised
                               for 10*FN + FP cost)
                  ▼
    {sk_id_curr, probability_default, decision,
     threshold, model_version, client_known}
+                 ▼
+   Supabase log via BackgroundTask (deferred — does not
+   block the HTTP response on the success path)
 ```
 
 **Two-case inference flow:**
@@ -257,7 +289,7 @@ The 235 MB `features_store.parquet` is **not bundled** in the Docker image. It l
 
 | Layer | Repo | Content |
 |-------|------|---------|
-| Code + small artefacts | `KLEB38/OC_P8` (Space, Docker) | `api/`, `models/*.json`, `models/model.joblib` |
+| Code + small artefacts | `KLEB38/OC_P8` (Space, Docker) | `api/`, `models/*.json`, `models/model.onnx` (served at runtime), `models/model.joblib` (kept for benchmark / drift checks) |
 | Large data | `KLEB38/oc-p8-features` (Dataset) | `features_store.parquet` (235 MB, LFS) |
 
 The local path (`data/features_store.parquet`) takes precedence — the HF download only fires when the file is absent (Space cold start). Configurable via `OC_P8_HF_DATASET_REPO_ID` and `OC_P8_HF_DATASET_FILENAME`.
@@ -273,12 +305,12 @@ push to main / pull request
         │
         ▼
    ┌─────────┐
-   │  test   │  ← runs on every push and PR
+   │  test   │  ← runs on every push and PR merge
    └────┬────┘
         │ success + workflow_dispatch
         ▼
    ┌─────────┐
-   │  deploy │  ← manual trigger only
+   │  deploy │  ← runs on every push and PR merge
    └─────────┘
 ```
 
@@ -287,7 +319,7 @@ push to main / pull request
 | Job | Trigger | Runner | Purpose |
 |-----|---------|--------|---------|
 | `test` | Every push / PR to `main` | `ubuntu-latest` | Lint + tests + coverage |
-| `deploy` | Manual `workflow_dispatch` (after `test`) | `ubuntu-latest` | Push repo to Hugging Face Space |
+| `deploy` | Success of `test` | `ubuntu-latest` | Push repo to Hugging Face Space |
 
 ---
 
@@ -331,8 +363,9 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 
 | Secret | Required for | Description |
 |--------|-------------|-------------|
-| `HF_TOKEN` | `deploy` (GitHub Actions) | Hugging Face write token ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) |
-| `HF_TOKEN` | Space runtime (optional) | Only required if the Dataset `KLEB38/oc-p8-features` is **private**. Set as a Space secret in HF → Space settings → Variables and secrets. |
+| `HF_TOKEN` | `deploy` (GitHub Actions) | Hugging Face write token ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) used by `upload_folder()` to push the Space contents |
+| `TEST_DATABASE_URL` | `build_and_test` (GitHub Actions) | Supabase connection string pointing at the **`predictions_log_test`** table |
+| `DATABASE_URL` | Dashboard Space runtime | Read-only Supabase connection string for `KLEB38/OC_P8_monitoring`. Set as a Space secret on the dashboard Space, not in GitHub. |
 
 ---
 
@@ -354,12 +387,14 @@ The Docker image bundles only the code and the small JSON/joblib artefacts under
 
 ```
 api/                      # Runtime — bundled in Docker image
-  main.py                 # FastAPI app + lifespan model loading
-  predictor.py            # Model + threshold wrapper
-  schemas.py              # Pydantic — 122 hand-crafted fields with ranges
+  main.py                 # FastAPI app + lifespan model loading + BackgroundTask logging
+  predictor.py            # ONNX Runtime InferenceSession + threshold wrapper
+  schemas.py              # Pydantic — 121 hand-crafted fields with ranges (SK_ID_CURR + 120 raw)
   inputs_transform.py     # Single-row app_train transform (one-hot fix)
   ratios.py               # 5 derived ratio formulas
-  inference_assembler.py  # Branch known/unknown + reindex to 768 cols
+  inference_assembler.py  # Branch known/unknown + reindex to 768 cols (optimised path)
+  logger.py               # Best-effort Supabase insert with per-step latencies
+  db.py                   # SQLAlchemy engine init/reset (lifespan-managed)
   settings.py             # Paths resolved from env vars with defaults
 
 feature_engineering/      # Offline ONLY — not imported by the API
@@ -370,6 +405,11 @@ scripts/                  # Offline maintenance scripts
   build_feature_store.py
   build_no_history_template.py
   export_model.py         # Imports model.joblib from OC_P6 MLflow registry
+  export_to_onnx.py       # Converts LightGBM .joblib → ONNX (zipmap=False, float32 graph)
+  benchmark_onnx.py       # p50/p95/p99 latency + numerical equivalence vs LightGBM
+  check_onnx_drift.py     # Quick proba-drift check between LightGBM and ONNX
+  profile_predict.py      # End-to-end profiling of the /predict pipeline
+  profile_transform_lines.py  # Line-level profiling of inputs_transform / assembler
   smoke_test_model.py
   check_registry.py
   upload_data_to_hf.py    # One-shot upload of features_store.parquet to HF Dataset
@@ -389,7 +429,7 @@ pyproject.toml
 
 ---
 
-## Monitoring & Data Drift (Étape 3)
+## Monitoring & Data Drift (Step 3)
 
 Every `/predict` call is logged to a Supabase PostgreSQL table
 (`predictions_log`) for production observability and drift analysis.
@@ -467,18 +507,105 @@ A read-only Supabase role is recommended.
 
 ---
 
-## Roadmap
+## Latency Optimisation (Step 4)
 
-- [x] **Étape 3** — Supabase logging + Evidently drift + Streamlit dashboard
-- [ ] **Étape 4** — Profiling, ONNX export, latency optimisation
-- [ ] Top-N SHAP contributors in `PredictionResponse` for loan officer explainability
-- [ ] Concept drift via `ground_truth` feedback collection
+After Step 3, profiling showed that a `/predict` call was dominated by two
+hotspots: synchronous Supabase logging on the request path, and a
+LightGBM single-row `predict_proba` whose Python overhead dwarfed the actual
+tree traversal. Step 4 tackles both — plus a feature-assembly cleanup —
+in three independent steps, each landed as its own PR.
+
+### Step 1 — Defer DB logging via `BackgroundTasks`
+
+The Supabase round-trip used to block the HTTP response. It now runs in a
+FastAPI `BackgroundTask` on the success path, so the client gets the
+`PredictionResponse` before the row is persisted. Failures still log
+**synchronously** — `BackgroundTasks` are attached to the route's Response,
+and the exception-handler chain builds its own Response and silently drops
+pending tasks. Trading one-shot latency on failing requests for full error
+observability is the right call.
+
+See [`api/main.py`](api/main.py) (`predict` handler's `finally:` block) and
+[`api/logger.py`](api/logger.py).
+
+### Step 2 — Tighten the feature assembler
+
+[`api/inference_assembler.py`](api/inference_assembler.py) was rewritten to
+avoid redundant DataFrame allocations and column reindexing on the hot
+path. The known/unknown branching now produces a single (1, 768) frame in
+the canonical `feature_names` order without intermediate copies — the slow
+part is no longer the join with the feature store but the upstream
+`inputs_transform` pass, profiled via
+[`scripts/profile_transform_lines.py`](scripts/profile_transform_lines.py).
+
+### Step 3 — Swap LightGBM for ONNX Runtime
+
+[`scripts/export_to_onnx.py`](scripts/export_to_onnx.py) converts the
+LightGBM `model.joblib` into `models/model.onnx` (with `zipmap=False` so
+the second output is a plain `(n, 2)` probability matrix). At runtime,
+[`api/predictor.py`](api/predictor.py) loads an `ort.InferenceSession`
+once at lifespan and calls it on every request, replacing
+`predict_proba`.
+
+**Thread pinning fix.** ONNX Runtime defaults to
+`intra_op_num_threads = num_cpus`, which on a shared HF Space VM contends
+with pandas during feature assembly and *increases* end-to-end latency on
+1-row inputs. The session is now built with
+`intra_op_num_threads = inter_op_num_threads = 1` — single-threaded ONNX
+on a single row is already in the microsecond range and leaves the rest
+of the CPU budget for the assembler.
+
+### Numerical drift caveat
+
+ONNX runs in float32 while LightGBM runs in float64, so tree split
+thresholds diverge marginally. Benchmark on 1 000 reference rows:
+
+- `max |delta_proba|` ≈ **3.3e-03**
+- 6 rows / 1 000 with `|delta| > 1e-5`
+
+For most clients this is irrelevant, but **borderline clients with
+`proba ∈ [0.325, 0.335]` may flip GRANTED ↔ REFUSED** vs. the original
+`model.joblib`. The Step 3 dashboard's *Business* tab is the right place
+to monitor this — filter the proba band post-deploy and watch the
+GRANTED share.
+
+### Benchmarks & drift checks
+
+```powershell
+# Latency + numerical equivalence vs LightGBM (writes a JSON report)
+uv run python scripts/benchmark_onnx.py --n 1000 --out profiling/benchmark_onnx.json
+
+# Quick proba-drift check on a fixed batch
+uv run python scripts/check_onnx_drift.py
+
+# End-to-end pipeline profiling (cProfile + pstats)
+uv run python scripts/profile_predict.py
+```
+
+Per-step timings (`feature_assembly_ms`, `inference_ms`, `inference_cpu_ms`,
+`plumbing_ms`) are persisted on every `predictions_log` row so the
+dashboard's *Ops* tab can break down latency by sub-step.
 
 ---
 
 ## License
 
-Internal project — Prêt à Dépenser MLOps formation OpenClassrooms.
+Internal project — MLOps coursework.
+
+---
+
+Project link: [github.com/KLEB38/OC_P8](https://github.com/KLEB38/OC_P8)
+
+Live deployment: [huggingface.co/spaces/KLEB38/OC_P8](https://huggingface.co/spaces/KLEB38/OC_P8)
+· Monitoring: [huggingface.co/spaces/KLEB38/OC_P8_monitoring](https://huggingface.co/spaces/KLEB38/OC_P8_monitoring)
+
+---
+
+## Acknowledgments
+
+- [Home Credit Default Risk (Kaggle)](https://www.kaggle.com/c/home-credit-default-risk) — source of the training data
+- [LightGBM](https://lightgbm.readthedocs.io/) · [ONNX Runtime](https://onnxruntime.ai/) · [FastAPI](https://fastapi.tiangolo.com/) · [Evidently](https://www.evidentlyai.com/) · [Supabase](https://supabase.com/) · [Hugging Face Spaces](https://huggingface.co/spaces)
+- README structure inspired by [othneildrew/Best-README-Template](https://github.com/othneildrew/Best-README-Template)
 
 ---
 
@@ -489,6 +616,8 @@ Internal project — Prêt à Dépenser MLOps formation OpenClassrooms.
 [fastapi-url]: https://fastapi.tiangolo.com/
 [lightgbm-badge]: https://img.shields.io/badge/LightGBM-4.x-2E8B57?style=for-the-badge
 [lightgbm-url]: https://lightgbm.readthedocs.io/
+[onnx-badge]: https://img.shields.io/badge/ONNX%20Runtime-1.x-005CED?style=for-the-badge&logo=onnx&logoColor=white
+[onnx-url]: https://onnxruntime.ai/
 [uv-badge]: https://img.shields.io/badge/uv-package%20manager-DE5FE9?style=for-the-badge
 [uv-url]: https://docs.astral.sh/uv/
 [docker-badge]: https://img.shields.io/badge/Docker-container-2496ED?style=for-the-badge&logo=docker&logoColor=white
