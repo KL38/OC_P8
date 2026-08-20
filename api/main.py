@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from api import db, settings
 from api.inference_assembler import InferenceArtefacts, assemble
@@ -28,7 +28,9 @@ from api.schemas import (
 )
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+)
 
 
 def _resolve_feature_store_path() -> Path:
@@ -121,14 +123,23 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
-@app.get("/", tags=["meta"])
-async def read_root() -> dict[str, str]:
-    return {"message": "Welcome to the CREDIT DEFAULT predictor API for Prêt à Dépenser"}
+@app.get("/", include_in_schema=False)
+async def read_root() -> RedirectResponse:
+    """Send the root to the interactive docs.
+
+    The Hugging Face Space page embeds the app in an iframe pointing at ``/``
+    and offers no address bar, so whatever ``/`` returns is the entire demo a
+    visitor gets. Landing them on Swagger makes the Space self-explanatory.
+    Machine callers should use ``/health``.
+    """
+    return RedirectResponse(url="/docs", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 async def health(request: Request) -> HealthResponse:
-    return HealthResponse(status="ok", model_version=request.app.state.predictor.model_version)
+    return HealthResponse(
+        status="ok", model_version=request.app.state.predictor.model_version
+    )
 
 
 @app.get("/model/info", response_model=ModelInfoResponse, tags=["meta"])
@@ -171,7 +182,9 @@ async def predict(
 
     try:
         t_asm = time.perf_counter()
-        features, client_known = assemble(raw_inputs, sk_id_curr=sk_id, artefacts=artefacts)
+        features, client_known = assemble(
+            raw_inputs, sk_id_curr=sk_id, artefacts=artefacts
+        )
         feature_assembly_ms = round((time.perf_counter() - t_asm) * 1000.0)
 
         t_inf_wall = time.perf_counter()

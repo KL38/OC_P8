@@ -36,6 +36,12 @@ DEFAULT_REFERENCE = Path("data/reference_dataset.parquet")
 DEFAULT_OUTPUT = Path("dashboard/static/drift_report.html")
 DEFAULT_FEATURE_NAMES = Path("models/feature_names.json")
 
+# A scheduled job replays examples/low_risk.json every two days so the free-tier
+# database is never paused for inactivity. Those rows are all the same applicant:
+# counted as production traffic they would manufacture drift that says nothing
+# about real usage, so they are excluded from the current window.
+KEEP_ALIVE_SK_ID_CURR = 282751
+
 
 def _load_reference(path: Path, feature_names: list[str]) -> pd.DataFrame:
     df = pd.read_parquet(path)
@@ -49,7 +55,9 @@ def _load_reference(path: Path, feature_names: list[str]) -> pd.DataFrame:
     return df[keep].copy()
 
 
-def _load_current(database_url: str, limit: int, feature_names: list[str]) -> pd.DataFrame:
+def _load_current(
+    database_url: str, limit: int, feature_names: list[str]
+) -> pd.DataFrame:
     """Pull the last ``limit`` successful predictions, ordered by most recent.
 
     Returns the JSONB feature payloads expanded into a wide DataFrame for
@@ -62,10 +70,11 @@ def _load_current(database_url: str, limit: int, feature_names: list[str]) -> pd
             text(
                 "SELECT features FROM predictions_log "
                 "WHERE status_code = 200 "
+                "AND sk_id_curr <> :keep_alive "
                 "ORDER BY timestamp DESC "
                 "LIMIT :lim"
             ),
-            {"lim": limit},
+            {"lim": limit, "keep_alive": KEEP_ALIVE_SK_ID_CURR},
         ).all()
     if not rows:
         raise SystemExit(
@@ -76,7 +85,9 @@ def _load_current(database_url: str, limit: int, feature_names: list[str]) -> pd
     keep = [c for c in feature_names if c in flat.columns]
     logger.info(
         "Loaded %d production rows (last %d requested), %d features available",
-        len(flat), limit, len(keep),
+        len(flat),
+        limit,
+        len(keep),
     )
     return flat[keep].copy()
 
@@ -153,7 +164,10 @@ def main() -> None:
         sample = ", ".join(sorted(empty)[:5])
         logger.warning(
             "Dropping %d all-NaN column(s) (empty in ref=%d, in current=%d). Sample: %s%s",
-            len(empty), len(empty_ref), len(empty_cur), sample,
+            len(empty),
+            len(empty_ref),
+            len(empty_cur),
+            sample,
             " ..." if len(empty) > 5 else "",
         )
         reference = reference.drop(columns=list(empty))
@@ -172,6 +186,7 @@ def main() -> None:
         json_payload = evaluation.json()
         if not isinstance(json_payload, str):
             import json as _json
+
             json_payload = _json.dumps(json_payload)
         json_path.write_text(json_payload, encoding="utf-8")
         logger.info("Saved drift report JSON to %s", json_path)
