@@ -197,9 +197,12 @@ and a Streamlit dashboard turns that table into production observability.
 
 **Live dashboard: [KLEB38/OC_P8_monitoring](https://huggingface.co/spaces/KLEB38/OC_P8_monitoring)**
 
-<!-- TODO: embed docs/monitoring.gif here once recorded.
-     Assets must live under docs/ — livrables/ is gitignored, which is why the
-     previous screenshot rendered as a broken image on GitHub. -->
+<div align="center">
+  <img src="docs/monitoring.gif" width="900"
+       alt="Monitoring dashboard: operational metrics, latency breakdown, drift report and business tabs" />
+  <br />
+  <em>The dashboard, recorded live — the four tabs below in motion.</em>
+</div>
 
 ### The four tabs
 
