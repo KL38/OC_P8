@@ -1,19 +1,24 @@
-# Exemples réalistes pour POST /predict
+# Realistic payloads for POST /predict
 
-Cinq profils-types couvrant le spectre de risque attendu par le modèle :
-trois clients **connus** (SK_ID_CURR présent dans `features_store.parquet`,
-donc historique bureau/prev/POS/CC/install agrégé) et deux clients
-**inconnus** (SK_ID_CURR absent, le `no_history_template` neutralise tout
-l'historique et le score ne repose plus que sur les inputs `app_train`).
-Toutes les valeurs respectent les bornes définies dans `api/schemas.py`.
+Five archetypes spanning the risk spectrum the model was trained on: three
+**known** clients (`SK_ID_CURR` present in `features_store.parquet`, so the
+bureau / prev / POS / CC / install history is aggregated) and two **unknown**
+clients (`SK_ID_CURR` absent, so `no_history_template` neutralises all history
+and the score rests on the `app_train` inputs alone). Every value respects the
+bounds declared in `api/schemas.py`.
+
+Profiles 1 and 3 are also available as standalone files, ready to pipe straight
+into `curl`: [`low_risk.json`](low_risk.json) and
+[`high_risk.json`](high_risk.json). See
+[Try it in 30 seconds](../README.md#try-it-in-30-seconds).
 
 ---
 
-## 1) Profil faible risque — cadre stable, propriétaire, scores externes élevés
+## 1) Low risk — stable executive, homeowner, high external scores
 
-Femme 42 ans, mariée, Higher education, manager dans une banque, revenu confortable,
-ancienneté ~10 ans, propriétaire d'un bien immobilier et d'une voiture, EXT_SOURCE élevés,
-ratio crédit/revenu modéré.
+Woman, 42, married, higher education, bank manager, comfortable income, ~10 years
+of seniority, owns both property and a car, high `EXT_SOURCE` values, moderate
+credit-to-income ratio. Available as [`low_risk.json`](low_risk.json).
 
 ```json
 {
@@ -143,10 +148,10 @@ ratio crédit/revenu modéré.
 
 ---
 
-## 2) Profil risque moyen — employé, locataire, scores externes médians
+## 2) Medium risk — employee, tenant, mid-range external scores
 
-Homme 32 ans, célibataire, Secondary education, Laborer dans l'industrie, revenu moyen,
-ancienneté 4 ans, locataire, EXT_SOURCE autour de 0.4-0.5, ratio crédit/revenu plus tendu.
+Man, 32, single, secondary education, industrial labourer, average income, 4 years
+of seniority, renting, `EXT_SOURCE` around 0.4-0.5, tighter credit-to-income ratio.
 
 ```json
 {
@@ -276,11 +281,12 @@ ancienneté 4 ans, locataire, EXT_SOURCE autour de 0.4-0.5, ratio crédit/revenu
 
 ---
 
-## 3) Profil haut risque — jeune, faibles revenus, scores externes bas, sollicitations bureau élevées
+## 3) High risk — young, low income, low external scores, heavy bureau activity
 
-Homme 25 ans, union libre, Secondary education, Low-skill Laborer, vit chez ses parents,
-faible ancienneté (8 mois), revenu bas, ratio crédit/revenu très tendu, EXT_SOURCE faibles,
-plusieurs requêtes au crédit bureau récentes, défauts sociaux observés.
+Man, 25, civil partnership, secondary education, low-skill labourer, living with
+his parents, 8 months of seniority, low income, very tight credit-to-income ratio,
+low `EXT_SOURCE` values, several recent credit-bureau enquiries, observed social
+defaults. Available as [`high_risk.json`](high_risk.json).
 
 ```json
 {
@@ -410,13 +416,13 @@ plusieurs requêtes au crédit bureau récentes, défauts sociaux observés.
 
 ---
 
-## 4) Client **inconnu** — bon profil
+## 4) **Unknown** client — good profile
 
-`SK_ID_CURR=999001` n'existe pas dans `features_store.parquet` → l'API
-remplit toutes les agrégations bureau / prev / POS / CC / install avec le
-`no_history_template` (counts=0, autres NaN). Le score repose alors
-uniquement sur les inputs `app_train`. Mêmes valeurs que le profil 1
-(cadre stable, EXT_SOURCE élevés) mais SK_ID hors du référentiel.
+`SK_ID_CURR=999001` does not exist in `features_store.parquet`, so the API fills
+every bureau / prev / POS / CC / install aggregate from `no_history_template`
+(counts=0, the rest NaN) and the score rests on the `app_train` inputs alone.
+Same values as profile 1 (stable executive, high `EXT_SOURCE`) but with an
+`SK_ID_CURR` outside the reference set.
 
 ```json
 {
@@ -546,11 +552,11 @@ uniquement sur les inputs `app_train`. Mêmes valeurs que le profil 1
 
 ---
 
-## 5) Client **inconnu** — mauvais profil
+## 5) **Unknown** client — bad profile
 
-`SK_ID_CURR=999002` absent du référentiel → `no_history_template` appliqué.
-Mêmes signaux app_train que le profil 3 (jeune, faibles revenus, EXT_SOURCE
-très bas, sollicitations bureau nombreuses, défauts sociaux).
+`SK_ID_CURR=999002` is absent from the reference set, so `no_history_template`
+applies. Same `app_train` signals as profile 3 (young, low income, very low
+`EXT_SOURCE`, many bureau enquiries, social defaults).
 
 ```json
 {
